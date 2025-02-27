@@ -1,1 +1,4 @@
 .direnv/*
+.cache/*
+build/*
+src/PolFinder/POSCAR
