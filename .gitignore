@@ -2,3 +2,4 @@
 .cache/*
 build/*
 src/PolFinder/POSCAR
+src/PolFinder/main.cpp
