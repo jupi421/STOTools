@@ -107,10 +107,10 @@ namespace PolFinder {
 	}
 
 	inline AtomPositions sortPositions(std::vector<Position> positions, const size_t N_Sr, const size_t N_Ti, const size_t N_O) {
-		AtomPositions atom_positions {};
-		std::ranges::copy(positions | std::views::take(N_Sr), atom_positions.SrPositions.begin());
-		std::ranges::copy(positions | std::views::drop(N_Sr) | std::views::take(N_Ti), atom_positions.TiPositions.begin());
-		std::ranges::copy(positions | std::views::drop(N_Sr+N_Ti) | std::views::take(N_O), atom_positions.OPositions.begin());
+		AtomPositions atom_positions(N_Sr, N_Ti, N_O);
+		std::ranges::copy(positions | std::views::take(N_Sr), std::back_inserter(atom_positions.SrPositions));
+		std::ranges::copy(positions | std::views::drop(N_Sr) | std::views::take(N_Ti), std::back_inserter(atom_positions.TiPositions));
+		std::ranges::copy(positions | std::views::drop(N_Sr+N_Ti) | std::views::take(N_O), std::back_inserter(atom_positions.OPositions));
 
 		assert(atom_positions.SrPositions.size() == N_Sr);
 		assert(atom_positions.TiPositions.size() == N_Ti);
@@ -119,7 +119,6 @@ namespace PolFinder {
 		return atom_positions;
 	}
 	
-
 	inline std::vector<NearestNeighbors> getNearestNeighbors(const AtomPositions &atom_arr, const size_t n) {
 		NearestNeighbors Sr_nearest_neighbors;
 		NearestNeighbors Ti_nearest_neighbors;
