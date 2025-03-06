@@ -14,9 +14,9 @@
 
 using Positions = std::vector<Eigen::Vector3d>;
 using Position = Eigen::Vector3d;
+using NNIDs = std::vector<size_t>;
 
 namespace PolFinder {
-	
 	struct AtomPositions {
 		Positions SrPositions {};
 		Positions TiPositions {};
@@ -29,6 +29,47 @@ namespace PolFinder {
 			OPositions.reserve(N_O);
 		}
 	};
+
+	struct NearestNeighbors {
+		std::vector<std::vector<size_t>> Sr_NN_ids;
+		std::vector<std::vector<size_t>> Ti_NN_ids;
+		std::vector<std::vector<size_t>> O_NN_ids;
+	};
+
+	namespace helper {
+		inline auto find_n_nearest = [](const Position &atom1, const Positions &atom_arr, const size_t n) {
+			std::vector<double> diff { };
+			diff.reserve(atom_arr.size());
+			
+			std::ranges::for_each(atom_arr.begin(), atom_arr.end(), [&atom1, &diff](const Position &atom2) {
+				diff.push_back((atom2 - atom1).norm());
+			});
+			
+			std::vector<size_t> atom_arr_ids(atom_arr.size());
+			std::iota(atom_arr_ids.begin(), atom_arr_ids.end(), 0);
+			
+			std::ranges::sort(atom_arr_ids.begin(), atom_arr_ids.end(), [&diff](const size_t idx1, const size_t idx2) {
+				return diff.at(idx1) < diff.at(idx2);
+			});
+
+			NNIDs n_min_instances;
+			n_min_instances.reserve(n);
+			std::ranges::copy_n(atom_arr_ids.begin(), n, std::back_inserter(n_min_instances));
+
+			return n_min_instances;
+		};
+
+		inline auto get_NN = [](const AtomPositions &atom_arr, const size_t n, NearestNeighbors &NN_arr, const Position &ref_atom){
+			NNIDs ref_atom_Sr_ids { find_n_nearest(ref_atom, atom_arr.SrPositions, n) };
+			NNIDs ref_atom_Ti_ids { find_n_nearest(ref_atom, atom_arr.TiPositions, n) };
+			NNIDs ref_atom_O_ids { find_n_nearest(ref_atom, atom_arr.OPositions, n) };
+
+			NN_arr.Sr_NN_ids.push_back(ref_atom_Sr_ids);
+			NN_arr.Ti_NN_ids.push_back(ref_atom_Ti_ids);
+			NN_arr.O_NN_ids.push_back(ref_atom_O_ids);
+		};
+	}
+	
 
 	// write different behavior for other filetypes (CONTCAR, XDATCAR, xyz, ...), calculate atom numbers??? for end file and then parallelised for loop 
 	inline Positions loadPosFromFile(std::string filename, uint head, const char* filetype = "POSCAR") {
@@ -78,54 +119,26 @@ namespace PolFinder {
 		return atom_positions;
 	}
 	
-	inline auto get_n_nearest = [](const Position &atom1, const Positions &atom_arr, const size_t n) {
-		std::vector<double> diff { };
-		diff.reserve(atom_arr.size());
+
+	inline std::vector<NearestNeighbors> getNearestNeighbors(const AtomPositions &atom_arr, const size_t n) {
+		NearestNeighbors Sr_nearest_neighbors;
+		NearestNeighbors Ti_nearest_neighbors;
+		NearestNeighbors O_nearest_neighbors;
 		
-		std::ranges::for_each(atom_arr.begin(), atom_arr.end(), [&atom1, &diff](const Position &atom2) {
-			diff.push_back((atom2 - atom1).norm());
+		std::ranges::for_each(atom_arr.SrPositions, [get_NN = helper::get_NN, &atom_arr, n, &Sr_nearest_neighbors](const Position &ref_atom) {
+			helper::get_NN(atom_arr, n, Sr_nearest_neighbors, ref_atom);
+		});
+
+		std::ranges::for_each(atom_arr.TiPositions, [get_NN = helper::get_NN, &atom_arr, n, &Ti_nearest_neighbors](const Position &ref_atom) {
+			get_NN(atom_arr, n, Ti_nearest_neighbors, ref_atom);
+		});
+
+		std::ranges::for_each(atom_arr.OPositions, [get_NN = helper::get_NN, &atom_arr, n, &O_nearest_neighbors](const Position &ref_atom) {
+			get_NN(atom_arr, n, O_nearest_neighbors, ref_atom);
 		});
 		
-		std::vector<size_t> atom_arr_ids(atom_arr.size());
-		std::iota(atom_arr_ids.begin(), atom_arr_ids.end(), 0);
-		
-		std::ranges::sort(atom_arr_ids.begin(), atom_arr_ids.end(), [&diff](const size_t idx1, const size_t idx2) {
-			return diff.at(idx1) < diff.at(idx2);
-		});
-
-		Positions n_min_instances { n };
-		for(size_t i=0; i<n; i++) {
-			n_min_instances.emplace_back(atom_arr_ids.at(diff.at(i)));
-		}
-
-		return n_min_instances;
-	};
-
-	inline std::vector<AtomPositions> getNearestNeighbors(const AtomPositions &atom_arr, const size_t n) {
-		AtomPositions Sr_nearest_neighbors;
-		AtomPositions Ti_nearest_neighbors;
-		AtomPositions O_nearest_neighbors;
-
-		std::ranges::for_each(atom_arr.SrPositions, [&atom_arr, n](const Position &atom1) {
-			Positions Sr_NN_Sr { get_n_nearest(atom1, atom_arr.SrPositions, n) };
-			Positions Sr_NN_Ti { get_n_nearest(atom1, atom_arr.TiPositions, n) };
-			Positions Sr_NN_O { get_n_nearest(atom1, atom_arr.OPositions, n) };
-
-			Sr_nearest_neighbors.SrPositions.push_back(Sr_NN_Sr);
-			Sr_nearest_neighbors.TiPositions.push_back(Ti_NN_Sr);
-			Sr_nearest_neighbors.OPositions.push_back(O_NN_Sr);
-		});
-
-		std::ranges::for_each(atom_arr.TiPositions, [&atom_arr, n](const Position &atom1) {
-			auto Ti_NN_Sr { get_n_nearest(atom1, atom_arr.SrPositions, n) };
-			auto Ti_NN_Ti { get_n_nearest(atom1, atom_arr.TiPositions, n) };
-			auto Ti_NN_O { get_n_nearest(atom1, atom_arr.OPositions, n) };
-		});
-
-		std::ranges::for_each(atom_arr.OPositions, [&atom_arr, n](const Position &atom1) {
-			auto O_NN_Sr { get_n_nearest(atom1, atom_arr.SrPositions, n) };
-			auto O_NN_Ti { get_n_nearest(atom1, atom_arr.TiPositions, n) };
-			auto O_NN_O { get_n_nearest(atom1, atom_arr.OPositions, n) };
-		});
+		return std::vector<NearestNeighbors>({ Sr_nearest_neighbors, Ti_nearest_neighbors, O_nearest_neighbors });
 	}
+
+	// TODO correct NN calculations with PBC
 }
