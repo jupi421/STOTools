@@ -24,5 +24,5 @@ add_library(polfinder_lib INTERFACE)
 target_include_directories(polfinder_lib INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(polfinder_lib INTERFACE Eigen3::Eigen)
 
-add_executable(test main.cpp)
+add_executable(test tests.cpp)
 target_link_libraries(test PRIVATE polfinder_lib)

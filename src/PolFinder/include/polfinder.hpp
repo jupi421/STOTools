@@ -8,15 +8,16 @@
 #include <ranges>
 #include <numeric>
 #include <Eigen/Core>
-#include <iostream>
 
+#include <iostream>
 #define print(x) std::cout << x << std::endl
 
-using Positions = std::vector<Eigen::Vector3d>;
-using Position = Eigen::Vector3d;
-using NNIDs = std::vector<size_t>;
-
 namespace PolFinder {
+
+	using Positions = std::vector<Eigen::Vector3d>;
+	using Position = Eigen::Vector3d;
+	using NNIDs = std::vector<size_t>;
+
 	struct AtomPositions {
 		Positions SrPositions {};
 		Positions TiPositions {};
@@ -37,11 +38,25 @@ namespace PolFinder {
 	};
 
 	namespace helper {
-		inline auto find_n_nearest = [](const Position &atom1, const Positions &atom_arr, const size_t n) {
+		inline auto find_n_nearest = [](const Position &atom1, const Positions &atom_arr, const Eigen::Matrix3d &cell_matrix, const size_t n) {
 			std::vector<double> diff { };
 			diff.reserve(atom_arr.size());
 			
-			std::ranges::for_each(atom_arr.begin(), atom_arr.end(), [&atom1, &diff](const Position &atom2) {
+			Eigen::Vector3d a0 { cell_matrix.row(0).transpose() };
+			Eigen::Vector3d a1 { cell_matrix.row(1).transpose() };
+			Eigen::Vector3d a2 { cell_matrix.row(2).transpose() };
+
+			double Lx { a0.norm() };
+			double Ly { a0.norm() };
+			double Lz { a0.norm() };
+			
+			std::ranges::for_each(atom_arr.begin(), atom_arr.end(), [&atom1, &diff, Lx, Ly, Lz](const Position &atom2) {
+				// TODO implement minimum image convention
+				Eigen::Vector3d dr { atom2 - atom1 };
+				double dx {	dr[0] - Lx };
+				double dy {	dr[0] - Ly };
+				double dz {	dr[0] - Lz };
+
 				diff.push_back((atom2 - atom1).norm());
 			});
 			
@@ -59,10 +74,10 @@ namespace PolFinder {
 			return n_min_instances;
 		};
 
-		inline auto get_NN = [](const AtomPositions &atom_arr, const size_t n, NearestNeighbors &NN_arr, const Position &ref_atom){
-			NNIDs ref_atom_Sr_ids { find_n_nearest(ref_atom, atom_arr.SrPositions, n) };
-			NNIDs ref_atom_Ti_ids { find_n_nearest(ref_atom, atom_arr.TiPositions, n) };
-			NNIDs ref_atom_O_ids { find_n_nearest(ref_atom, atom_arr.OPositions, n) };
+		inline auto get_NN = [](const AtomPositions &atom_arr, const size_t n, NearestNeighbors &NN_arr, const Position &ref_atom, const Eigen::Matrix3d &cell_matrix) {
+			NNIDs ref_atom_Sr_ids { find_n_nearest(ref_atom, atom_arr.SrPositions, cell_matrix, n) };
+			NNIDs ref_atom_Ti_ids { find_n_nearest(ref_atom, atom_arr.TiPositions, cell_matrix, n) };
+			NNIDs ref_atom_O_ids { find_n_nearest(ref_atom, atom_arr.OPositions, cell_matrix, n) };
 
 			NN_arr.Sr_NN_ids.push_back(ref_atom_Sr_ids);
 			NN_arr.Ti_NN_ids.push_back(ref_atom_Ti_ids);
@@ -72,28 +87,37 @@ namespace PolFinder {
 	
 
 	// write different behavior for other filetypes (CONTCAR, XDATCAR, xyz, ...), calculate atom numbers??? for end file and then parallelised for loop 
-	inline Positions loadPosFromFile(std::string filename, uint head, const char* filetype = "POSCAR") {
+	inline Positions loadPosFromFile(std::string filename, uint head=0, long tail_start=-1, const char* filetype="POSCAR") {
+		if (std::strcmp(filetype, "POSCAR") != 0) {
+			throw std::runtime_error("Filetype not supported. (currently POSCAR only)");
+		}
+
 		std::ifstream file { filename };
-		
+
 		if (!file.is_open()) {
 			throw std::runtime_error("Failed loading file!");
 		}
 
 		std::string line;
 		uint skip { head };
-		
+		uint line_num { 0 };
 		Position position;
 		Positions positions;
+
 		while(std::getline(file, line)) {
+
+			++line_num;
+
 			if (skip) {
 				--skip;
 				continue;
 			}
-			
-			if (std::strcmp(filetype, "POSCAR") != 0) {
-				throw std::runtime_error("Filetype not supported");
+
+			if (line_num == tail_start) {
+				break;	
 			}
 
+			// TODO proper error handling if read something else than str
 			line = line.substr(2, line.length()); // strip leading whitespace
 			std::string pos_x = line.substr(0, line.find("  "));
 			std::string pos_y = line.substr(pos_x.length()+2, line.find("  "));
@@ -106,7 +130,7 @@ namespace PolFinder {
 		return positions;
 	}
 
-	inline AtomPositions sortPositions(std::vector<Position> positions, const size_t N_Sr, const size_t N_Ti, const size_t N_O) {
+	inline AtomPositions sortPositionsByType(std::vector<Position> positions, const size_t N_Sr, const size_t N_Ti, const size_t N_O) {
 		AtomPositions atom_positions(N_Sr, N_Ti, N_O);
 		std::ranges::copy(positions | std::views::take(N_Sr), std::back_inserter(atom_positions.SrPositions));
 		std::ranges::copy(positions | std::views::drop(N_Sr) | std::views::take(N_Ti), std::back_inserter(atom_positions.TiPositions));
@@ -119,21 +143,21 @@ namespace PolFinder {
 		return atom_positions;
 	}
 	
-	inline std::vector<NearestNeighbors> getNearestNeighbors(const AtomPositions &atom_arr, const size_t n) {
+	inline std::vector<NearestNeighbors> getNearestNeighbors(const AtomPositions &atom_arr, Eigen::Matrix3d &cell_matrix, const size_t n) {
 		NearestNeighbors Sr_nearest_neighbors;
 		NearestNeighbors Ti_nearest_neighbors;
 		NearestNeighbors O_nearest_neighbors;
 		
-		std::ranges::for_each(atom_arr.SrPositions, [get_NN = helper::get_NN, &atom_arr, n, &Sr_nearest_neighbors](const Position &ref_atom) {
-			helper::get_NN(atom_arr, n, Sr_nearest_neighbors, ref_atom);
+		std::ranges::for_each(atom_arr.SrPositions, [get_NN = helper::get_NN, &atom_arr, n, &Sr_nearest_neighbors, &cell_matrix](const Position &ref_atom) {
+			helper::get_NN(atom_arr, n, Sr_nearest_neighbors, ref_atom, cell_matrix);
 		});
 
-		std::ranges::for_each(atom_arr.TiPositions, [get_NN = helper::get_NN, &atom_arr, n, &Ti_nearest_neighbors](const Position &ref_atom) {
-			get_NN(atom_arr, n, Ti_nearest_neighbors, ref_atom);
+		std::ranges::for_each(atom_arr.TiPositions, [get_NN = helper::get_NN, &atom_arr, n, &Ti_nearest_neighbors, &cell_matrix](const Position &ref_atom) {
+			get_NN(atom_arr, n, Ti_nearest_neighbors, ref_atom, cell_matrix);
 		});
 
-		std::ranges::for_each(atom_arr.OPositions, [get_NN = helper::get_NN, &atom_arr, n, &O_nearest_neighbors](const Position &ref_atom) {
-			get_NN(atom_arr, n, O_nearest_neighbors, ref_atom);
+		std::ranges::for_each(atom_arr.OPositions, [get_NN = helper::get_NN, &atom_arr, n, &O_nearest_neighbors, &cell_matrix](const Position &ref_atom) {
+			get_NN(atom_arr, n, O_nearest_neighbors, ref_atom, cell_matrix);
 		});
 		
 		return std::vector<NearestNeighbors>({ Sr_nearest_neighbors, Ti_nearest_neighbors, O_nearest_neighbors });
