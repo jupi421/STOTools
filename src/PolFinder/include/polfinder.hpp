@@ -39,32 +39,35 @@ namespace PolFinder {
 
 	namespace helper {
 		inline auto find_n_nearest = [](const Position &atom1, const Positions &atom_arr, const Eigen::Matrix3d &cell_matrix, const size_t n) {
-			std::vector<double> diff { };
-			diff.reserve(atom_arr.size());
+			std::vector<double> dist { };
+			dist.reserve(atom_arr.size());
 			
 			Eigen::Vector3d a0 { cell_matrix.row(0).transpose() };
 			Eigen::Vector3d a1 { cell_matrix.row(1).transpose() };
 			Eigen::Vector3d a2 { cell_matrix.row(2).transpose() };
 
 			double Lx { a0.norm() };
-			double Ly { a0.norm() };
-			double Lz { a0.norm() };
-			
-			std::ranges::for_each(atom_arr.begin(), atom_arr.end(), [&atom1, &diff, Lx, Ly, Lz](const Position &atom2) {
-				// TODO implement minimum image convention
-				Eigen::Vector3d dr { atom2 - atom1 };
-				double dx {	dr[0] - Lx };
-				double dy {	dr[0] - Ly };
-				double dz {	dr[0] - Lz };
+			double Ly { a1.norm() };
+			double Lz { a2.norm() };
 
-				diff.push_back((atom2 - atom1).norm());
+			double Lx_relative { 1/Lx };
+			double Ly_relative { 1/Ly };
+			double Lz_relative { 1/Lz };
+			
+			std::ranges::for_each(atom_arr.begin(), atom_arr.end(), [&atom1, &dist, Lx, Ly, Lz, Lx_relative, Ly_relative, Lz_relative](const Position &atom2) {
+				Eigen::Vector3d dr { atom2 - atom1 };
+				double dx {	dr[0] - Lx*static_cast<int>(dr[0]*Lx_relative + 0.5) };
+				double dy {	dr[1] - Ly*static_cast<int>(dr[1]*Ly_relative + 0.5) };
+				double dz {	dr[2] - Lz*static_cast<int>(dr[2]*Lz_relative + 0.5) };
+
+				dist.push_back(Eigen::Vector3d(dx, dy, dz).norm());
 			});
 			
 			std::vector<size_t> atom_arr_ids(atom_arr.size());
 			std::iota(atom_arr_ids.begin(), atom_arr_ids.end(), 0);
 			
-			std::ranges::sort(atom_arr_ids.begin(), atom_arr_ids.end(), [&diff](const size_t idx1, const size_t idx2) {
-				return diff.at(idx1) < diff.at(idx2);
+			std::ranges::sort(atom_arr_ids.begin(), atom_arr_ids.end(), [&dist](const size_t idx1, const size_t idx2) {
+				return dist.at(idx1) < dist.at(idx2);
 			});
 
 			NNIDs n_min_instances;
