@@ -53,12 +53,18 @@ namespace PolFinder {
 			double Lx_relative { 1/Lx };
 			double Ly_relative { 1/Ly };
 			double Lz_relative { 1/Lz };
+		
 			
 			std::ranges::for_each(atom_arr.begin(), atom_arr.end(), [&atom1, &dist, Lx, Ly, Lz, Lx_relative, Ly_relative, Lz_relative](const Position &atom2) {
 				Eigen::Vector3d dr { atom2 - atom1 };
-				double dx {	dr[0] - Lx*static_cast<int>(dr[0]*Lx_relative + 0.5) };
-				double dy {	dr[1] - Ly*static_cast<int>(dr[1]*Ly_relative + 0.5) };
-				double dz {	dr[2] - Lz*static_cast<int>(dr[2]*Lz_relative + 0.5) };
+
+				double dx { std::abs(dr[0]) };
+				double dy { std::abs(dr[1]) };
+				double dz { std::abs(dr[2]) };
+
+				dx -= Lx*static_cast<int>(dx*Lx_relative + 0.5);
+				dy -= Ly*static_cast<int>(dy*Ly_relative + 0.5);
+				dz -= Lz*static_cast<int>(dz*Lz_relative + 0.5);
 
 				dist.push_back(Eigen::Vector3d(dx, dy, dz).norm());
 			});

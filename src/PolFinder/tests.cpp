@@ -36,11 +36,73 @@ void testSortPositions() {
 	}
 }
 
-void testGetNearestNeighbors();
+void testGetNearestNeighbors() {
+	uint n = 8;
+	Eigen::Matrix3d cell_matrix;
+	cell_matrix << 23.3031,   0,	   0,
+					0,		 15.6192,  0,
+					0,		  0,	  17.5004;
+
+	PolFinder::Positions positions = PolFinder::loadPosFromFile(name, 8);
+	PolFinder::AtomPositions sorted_positions = PolFinder::sortPositionsByType(positions, 96, 96, 288);
+	std::vector<PolFinder::NearestNeighbors> nearest_neighbors = PolFinder::getNearestNeighbors(sorted_positions, cell_matrix, 8);
+	
+	PolFinder::NearestNeighbors Sr_NN { nearest_neighbors.at(0) }; 
+	PolFinder::NearestNeighbors Ti_NN { nearest_neighbors.at(1) };
+	PolFinder::NearestNeighbors O_NN { nearest_neighbors.at(2) };
+
+	assert(Sr_NN.Sr_NN_ids.size() == 96);
+	assert(Sr_NN.Ti_NN_ids.size() == 96);
+	assert(Sr_NN.O_NN_ids.size() == 96);
+
+	assert(Ti_NN.Sr_NN_ids.size() == 96);
+	assert(Ti_NN.Ti_NN_ids.size() == 96);
+	assert(Ti_NN.O_NN_ids.size() == 96);
+
+	assert(O_NN.Sr_NN_ids.size() == 288);
+	assert(O_NN.Ti_NN_ids.size() == 288);
+	assert(O_NN.O_NN_ids.size() == 288);
+	
+	// Sr NN
+	for(const auto &NN_list : Sr_NN.Sr_NN_ids) {
+		assert(NN_list.size() == n);
+	}
+	for(const auto &NN_list : Sr_NN.Ti_NN_ids) {
+		assert(NN_list.size() == n);
+	}
+	for(const auto &NN_list : Sr_NN.O_NN_ids) {
+		assert(NN_list.size() == n);
+	}
+
+	// Ti NN
+	for(const auto &NN_list : Ti_NN.Sr_NN_ids) {
+		assert(NN_list.size() == n);
+	}
+	for(const auto &NN_list : Ti_NN.Ti_NN_ids) {
+		assert(NN_list.size() == n);
+	}
+	for(const auto &NN_list : Ti_NN.O_NN_ids) {
+		assert(NN_list.size() == n);
+	}
+
+	// O NN
+	for(const auto &NN_list : O_NN.Sr_NN_ids) {
+		assert(NN_list.size() == n);
+	}
+	for(const auto &NN_list : O_NN.Ti_NN_ids) {
+		assert(NN_list.size() == n);
+	}
+	for(const auto &NN_list : O_NN.O_NN_ids) {
+		assert(NN_list.size() == n);
+	}
+
+	// TODO test distances are within range 
+}
 
 int main() {
 	testFileReader();
 	testSortPositions();
+	testGetNearestNeighbors();
 
 	std::cout << "All tests completed!" << std::endl;
 } 
