@@ -8,7 +8,7 @@ const char* name = "./POSCAR";
 void testFileReader() {
 	PolFinder::Positions test = PolFinder::loadPosFromFile(name, 8, 105);
 	for(auto &i : test) {
-		std::printf("  %.16f  %.16f  %.16f\n", i[0], i[1], i[2]);
+		//std::printf("  %.16f  %.16f  %.16f\n", i[0], i[1], i[2]);
 	}
 	assert(test.size() == 96);
 }
@@ -33,6 +33,7 @@ void testSortPositions() {
 		assert(sorted_positions.OPositions[i][0] == O_positions[i][0]);
 		assert(sorted_positions.OPositions[i][1] == O_positions[i][1]);
 		assert(sorted_positions.OPositions[i][2] == O_positions[i][2]);
+
 	}
 }
 
@@ -54,6 +55,7 @@ void testGetNearestNeighbors() {
 	assert(Sr_NN.Sr_NN_ids.size() == 96);
 	assert(Sr_NN.Ti_NN_ids.size() == 96);
 	assert(Sr_NN.O_NN_ids.size() == 96);
+	
 
 	assert(Ti_NN.Sr_NN_ids.size() == 96);
 	assert(Ti_NN.Ti_NN_ids.size() == 96);
@@ -97,6 +99,44 @@ void testGetNearestNeighbors() {
 	}
 
 	// TODO test distances are within range 
+	double threshold { };
+	for(size_t reference_atom_id { 0 }; reference_atom_id < Sr_NN.Sr_NN_ids.size(); reference_atom_id++) {
+		Eigen::Vector3d reference_atom { sorted_positions.SrPositions.at(reference_atom_id) };
+		std::vector<size_t> reference_atom_NN { Sr_NN.Sr_NN_ids.at(reference_atom_id) }; 
+
+		Eigen::Vector3d a0 { cell_matrix.row(0).transpose() };
+		Eigen::Vector3d a1 { cell_matrix.row(1).transpose() };
+		Eigen::Vector3d a2 { cell_matrix.row(2).transpose() };
+
+		double Lx { a0.norm() };
+		double Ly { a1.norm() };
+		double Lz { a2.norm() };
+
+		double Lx_relative { 1/Lx };
+		double Ly_relative { 1/Ly };
+		double Lz_relative { 1/Lz };
+
+		std::cout << reference_atom.transpose() << '\n';
+		for(const size_t &NN_ids : reference_atom_NN) {
+			Eigen::Vector3d current_atom { sorted_positions.SrPositions.at(NN_ids) };
+			Eigen::Vector3d dr { current_atom - reference_atom };
+
+			double dx { std::abs(dr[0]) };
+			double dy { std::abs(dr[1]) };
+			double dz { std::abs(dr[2]) };
+
+			dx -= Lx*static_cast<int>(dx*Lx_relative + 0.5);
+			dy -= Ly*static_cast<int>(dy*Ly_relative + 0.5);
+			dz -= Lz*static_cast<int>(dz*Lz_relative + 0.5);
+
+			Eigen::Vector3d distance_vector { dx, dy, dz };
+			double distance {(cell_matrix*distance_vector).norm()};
+			std::cout << current_atom.transpose() << '\n';
+			//std::cout << "Ref: " << reference_atom_id << "  " << "Cur: " << NN_ids << "  " << "dist: " << distance << std::endl;
+
+
+		}
+	}
 }
 
 int main() {
@@ -104,5 +144,5 @@ int main() {
 	testSortPositions();
 	testGetNearestNeighbors();
 
-	std::cout << "All tests completed!" << std::endl;
+	//std::cout << "All tests completed!" << std::endl;
 } 
