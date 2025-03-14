@@ -1,6 +1,5 @@
 .direnv/*
 .cache/*
 build/*
-src/PolFinder/POSCAR
 src/PolFinder/main.cpp
 src/PolFinder/Poscar_test

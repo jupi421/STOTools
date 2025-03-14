@@ -6,6 +6,7 @@
 #include <vector>
 #include <algorithm>
 #include <ranges>
+#include <utility>
 #include <numeric>
 #include <Eigen/Core>
 
@@ -16,7 +17,7 @@ namespace PolFinder {
 
 	using Positions = std::vector<Eigen::Vector3d>;
 	using Position = Eigen::Vector3d;
-	using NNIDs = std::vector<size_t>;
+	using NNIDs = std::vector<std::pair<size_t, double>>;
 
 	struct AtomPositions {
 		Positions SrPositions {};
@@ -32,60 +33,50 @@ namespace PolFinder {
 	};
 
 	struct NearestNeighbors {
-		std::vector<std::vector<size_t>> Sr_NN_ids;
-		std::vector<std::vector<size_t>> Ti_NN_ids;
-		std::vector<std::vector<size_t>> O_NN_ids;
+		std::vector<NNIDs> Sr_NN_ids;
+		std::vector<NNIDs> Ti_NN_ids;
+		std::vector<NNIDs> O_NN_ids;
 	};
 
 	namespace helper {
-		inline auto find_n_nearest = [](const Position &atom1, const Positions &atom_arr, const Eigen::Matrix3d &cell_matrix, const size_t n, const size_t atom1_id) {
-			std::vector<double> dist { };
+		inline auto get_direct_distance = [](const Position &atom_1, const Position &atom2, const size_t idx = 0){
+
+			Eigen::Vector3d dr { atom2 - atom_1 };
+
+			double dx { std::abs(dr[0]) };
+			double dy { std::abs(dr[1]) };
+			double dz { std::abs(dr[2]) };
+
+			dx -= static_cast<int>(dx + 0.5);
+			dy -= static_cast<int>(dy + 0.5);
+			dz -= static_cast<int>(dz + 0.5);
+			
+			return Eigen::Vector3d(dx, dy, dz).norm();
+		};
+
+		inline auto find_n_nearest = [](const Position &reference_atom, const Positions &atom_arr, const Eigen::Matrix3d &cell_matrix, const size_t n, const size_t reference_atom_id) {
+			std::vector<std::pair<size_t, double>> dist;
 			dist.reserve(atom_arr.size());
-			
-			Eigen::Vector3d a0 { cell_matrix.row(0).transpose() };
-			Eigen::Vector3d a1 { cell_matrix.row(1).transpose() };
-			Eigen::Vector3d a2 { cell_matrix.row(2).transpose() };
-
-			double Lx { a0.norm() };
-			double Ly { a1.norm() };
-			double Lz { a2.norm() };
-
-			double Lx_relative { 1/Lx };
-			double Ly_relative { 1/Ly };
-			double Lz_relative { 1/Lz };
 		
-			
-			std::ranges::for_each(atom_arr.begin(), atom_arr.end(), [&atom1, &dist, Lx, Ly, Lz, Lx_relative, Ly_relative, Lz_relative, &cell_matrix](const Position &atom2) {
-				if (atom1[0] == atom2[0] && atom1[1] == atom2[1] && atom1[2] == atom2[2]) {
-					return;
-				}
-
-				Eigen::Vector3d dr { atom2 - atom1 };
-
-				double dx { std::abs(dr[0]) };
-				double dy { std::abs(dr[1]) };
-				double dz { std::abs(dr[2]) };
-
-				dx -= Lx*static_cast<int>(dx*Lx_relative + 0.5);
-				dy -= Ly*static_cast<int>(dy*Ly_relative + 0.5);
-				dz -= Lz*static_cast<int>(dz*Lz_relative + 0.5);
-
-				dist.push_back((cell_matrix*Eigen::Vector3d(dx, dy, dz)).norm());
+			std::ranges::for_each(atom_arr, [&atom_arr](const Position &reference_atom){
+				size_t idx { };
+				std::ranges::for_each(atom_arr, [&reference_atom, &idx](const Position &other_atom){
+					std::pair<size_t, const double> id_dist { idx, get_direct_distance(reference_atom, other_atom) };
+					idx++;
+				});
 			});
 
-			std::vector<size_t> atom_arr_ids(atom_arr.size() - 1);
-			std::iota(atom_arr_ids.begin(), atom_arr_ids.end(), 0);
-			atom_arr_ids.erase(atom_arr_ids.begin() + atom1_id);
-			
-			std::ranges::sort(atom_arr_ids.begin(), atom_arr_ids.end(), [&dist](const size_t idx1, const size_t idx2) {
-				return dist.at(idx1) < dist.at(idx2);
+			dist.erase(dist.begin() + reference_atom_id);
+
+			std::ranges::sort(dist.begin(), dist.end(), [](const auto &p1, const auto &p2){
+				return p1.second < p2.second;
 			});
 
-			NNIDs n_min_instances;
-			n_min_instances.reserve(n);
-			std::ranges::copy_n(atom_arr_ids.begin(), n, std::back_inserter(n_min_instances));
+			NNIDs n_min_neighbors;
+			n_min_neighbors.reserve(n);
+			std::ranges::copy_n(dist.begin(), n, std::back_inserter(n_min_neighbors));
 
-			return n_min_instances;
+			return n_min_neighbors;
 		};
 
 		inline auto get_NN = [](const AtomPositions &atom_arr, const size_t n, NearestNeighbors &NN_arr, const Position &ref_atom, const size_t ref_atom_id, const Eigen::Matrix3d &cell_matrix) {
@@ -132,11 +123,15 @@ namespace PolFinder {
 			}
 
 			// TODO proper error handling if read something else than str
-			line = line.substr(2, line.length()); // strip leading whitespace
-			std::string pos_x = line.substr(0, line.find("  "));
-			std::string pos_y = line.substr(pos_x.length()+2, line.find("  "));
-			std::string pos_z = line.substr(pos_x.length()+pos_y.length()+4, line.find(" "));
+			// do read line with regex instead of hard coded whitespace length
+			//line = line.substr(2, line.length()); // strip leading whitespace
+			//std::string pos_x = line.substr(0, line.find("  "));
+			//std::string pos_y = line.substr(pos_x.length()+2, line.find("  "));
+			//std::string pos_z = line.substr(pos_x.length()+pos_y.length()+4, line.find(" "));
 			
+			std::string pos_x = line.substr(0, line.find(" "));
+			std::string pos_y = line.substr(pos_x.length()+1, line.find(" "));
+			std::string pos_z = line.substr(pos_x.length()+pos_y.length()+2, line.length());
 			positions.emplace_back(std::stod(pos_x), std::stod(pos_y), std::stod(pos_z));
 		}
 		
