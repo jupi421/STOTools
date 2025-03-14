@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <ranges>
 #include <utility>
-#include <numeric>
+#include <optional>
 #include <Eigen/Core>
 
 #include <iostream>
@@ -39,9 +39,17 @@ namespace PolFinder {
 	};
 
 	namespace helper {
-		inline auto get_direct_distance = [](const Position &atom_1, const Position &atom2, const size_t idx = 0){
+		inline Eigen::Vector3d convert_coordinates(Position &vector, const Eigen::Matrix3d &cell_matrix) {
+			return cell_matrix*vector;
+		}
+		// TODO add coordinate conversion utility to get_distance
+		inline auto get_distance = [](const Position &atom_1, const Position &atom2, const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt){
 
 			Eigen::Vector3d dr { atom2 - atom_1 };
+			
+			if (cell_matrix.has_value()) {
+				dr = helper::convert_coordinates(dr, cell_matrix.value());
+			}
 
 			double dx { std::abs(dr[0]) };
 			double dy { std::abs(dr[1]) };
@@ -54,13 +62,13 @@ namespace PolFinder {
 			return Eigen::Vector3d(dx, dy, dz).norm();
 		};
 
-		inline auto find_n_nearest = [](const Position &reference_atom, const Positions &atom_arr, const size_t n, const size_t reference_atom_id) {
+		inline auto find_n_nearest = [](const Position &reference_atom, const Positions &atom_arr, const size_t n, const size_t reference_atom_id, const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt) {
 			std::vector<std::pair<size_t, double>> dist;
 			dist.reserve(atom_arr.size());
 		
 			size_t idx { };
 			std::ranges::for_each(atom_arr, [&dist, &reference_atom, &idx](const Position &other_atom){
-				dist.emplace_back(std::make_pair(idx, get_direct_distance(reference_atom, other_atom)));
+				dist.emplace_back(std::make_pair(idx, get_distance(reference_atom, other_atom)));
 				idx++;
 			});
 
