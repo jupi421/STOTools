@@ -54,16 +54,14 @@ namespace PolFinder {
 			return Eigen::Vector3d(dx, dy, dz).norm();
 		};
 
-		inline auto find_n_nearest = [](const Position &reference_atom, const Positions &atom_arr, const Eigen::Matrix3d &cell_matrix, const size_t n, const size_t reference_atom_id) {
+		inline auto find_n_nearest = [](const Position &reference_atom, const Positions &atom_arr, const size_t n, const size_t reference_atom_id) {
 			std::vector<std::pair<size_t, double>> dist;
 			dist.reserve(atom_arr.size());
 		
-			std::ranges::for_each(atom_arr, [&atom_arr](const Position &reference_atom){
-				size_t idx { };
-				std::ranges::for_each(atom_arr, [&reference_atom, &idx](const Position &other_atom){
-					std::pair<size_t, const double> id_dist { idx, get_direct_distance(reference_atom, other_atom) };
-					idx++;
-				});
+			size_t idx { };
+			std::ranges::for_each(atom_arr, [&reference_atom, &idx](const Position &other_atom){
+				std::pair<size_t, const double> id_dist { idx, get_direct_distance(reference_atom, other_atom) };
+				idx++;
 			});
 
 			dist.erase(dist.begin() + reference_atom_id);
@@ -79,10 +77,10 @@ namespace PolFinder {
 			return n_min_neighbors;
 		};
 
-		inline auto get_NN = [](const AtomPositions &atom_arr, const size_t n, NearestNeighbors &NN_arr, const Position &ref_atom, const size_t ref_atom_id, const Eigen::Matrix3d &cell_matrix) {
-			NNIDs ref_atom_Sr_ids { find_n_nearest(ref_atom, atom_arr.SrPositions, cell_matrix, n, ref_atom_id) };
-			NNIDs ref_atom_Ti_ids { find_n_nearest(ref_atom, atom_arr.TiPositions, cell_matrix, n, ref_atom_id) };
-			NNIDs ref_atom_O_ids { find_n_nearest(ref_atom, atom_arr.OPositions, cell_matrix, n, ref_atom_id) };
+		inline auto get_NN = [](const AtomPositions &atom_arr, const size_t n, NearestNeighbors &NN_arr, const Position &ref_atom, const size_t ref_atom_id) {
+			NNIDs ref_atom_Sr_ids { find_n_nearest(ref_atom, atom_arr.SrPositions, n, ref_atom_id) };
+			NNIDs ref_atom_Ti_ids { find_n_nearest(ref_atom, atom_arr.TiPositions, n, ref_atom_id) };
+			NNIDs ref_atom_O_ids { find_n_nearest(ref_atom, atom_arr.OPositions, n, ref_atom_id) };
 
 			NN_arr.Sr_NN_ids.push_back(ref_atom_Sr_ids);
 			NN_arr.Ti_NN_ids.push_back(ref_atom_Ti_ids);
@@ -158,20 +156,20 @@ namespace PolFinder {
 		NearestNeighbors O_nearest_neighbors;
 		
 		size_t atom_id { 0 };
-		std::ranges::for_each(atom_arr.SrPositions, [get_NN = helper::get_NN, &atom_arr, n, &Sr_nearest_neighbors, &cell_matrix, &atom_id](const Position &ref_atom) {
-			helper::get_NN(atom_arr, n, Sr_nearest_neighbors, ref_atom, atom_id, cell_matrix);
+		std::ranges::for_each(atom_arr.SrPositions, [get_NN = helper::get_NN, &atom_arr, n, &Sr_nearest_neighbors, &atom_id](const Position &ref_atom) {
+			helper::get_NN(atom_arr, n, Sr_nearest_neighbors, ref_atom, atom_id);
 			atom_id++;
 		});
 		
 		atom_id = 0;
-		std::ranges::for_each(atom_arr.TiPositions, [get_NN = helper::get_NN, &atom_arr, n, &Ti_nearest_neighbors, &cell_matrix, &atom_id](const Position &ref_atom) {
-			get_NN(atom_arr, n, Ti_nearest_neighbors, ref_atom, atom_id, cell_matrix);
+		std::ranges::for_each(atom_arr.TiPositions, [get_NN = helper::get_NN, &atom_arr, n, &Ti_nearest_neighbors, &atom_id](const Position &ref_atom) {
+			get_NN(atom_arr, n, Ti_nearest_neighbors, ref_atom, atom_id);
 			atom_id++;
 		});
 
 		atom_id = 0;
-		std::ranges::for_each(atom_arr.OPositions, [get_NN = helper::get_NN, &atom_arr, n, &O_nearest_neighbors, &cell_matrix, &atom_id](const Position &ref_atom) {
-			get_NN(atom_arr, n, O_nearest_neighbors, ref_atom, atom_id, cell_matrix);
+		std::ranges::for_each(atom_arr.OPositions, [get_NN = helper::get_NN, &atom_arr, n, &O_nearest_neighbors, &atom_id](const Position &ref_atom) {
+			get_NN(atom_arr, n, O_nearest_neighbors, ref_atom, atom_id);
 			atom_id++;
 		});
 		
