@@ -59,8 +59,8 @@ namespace PolFinder {
 			dist.reserve(atom_arr.size());
 		
 			size_t idx { };
-			std::ranges::for_each(atom_arr, [&reference_atom, &idx](const Position &other_atom){
-				std::pair<size_t, const double> id_dist { idx, get_direct_distance(reference_atom, other_atom) };
+			std::ranges::for_each(atom_arr, [&dist, &reference_atom, &idx](const Position &other_atom){
+				dist.emplace_back(std::make_pair(idx, get_direct_distance(reference_atom, other_atom)));
 				idx++;
 			});
 
