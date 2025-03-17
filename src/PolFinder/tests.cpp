@@ -54,7 +54,7 @@ void testGetNearestNeighbors() {
 
 	PolFinder::Positions positions = PolFinder::loadPosFromFile(name, 8);
 	PolFinder::AtomPositions sorted_positions = PolFinder::sortPositionsByType(positions, 96, 96, 288);
-	std::vector<PolFinder::NearestNeighbors> nearest_neighbors = PolFinder::getNearestNeighbors(sorted_positions, cell_matrix, 8);
+	std::vector<PolFinder::NearestNeighbors> nearest_neighbors = PolFinder::getNearestNeighbors(sorted_positions, 8, cell_matrix);
 	
 	PolFinder::NearestNeighbors Sr_NN { nearest_neighbors.at(0) }; 
 	PolFinder::NearestNeighbors Ti_NN { nearest_neighbors.at(1) };
@@ -112,22 +112,8 @@ void testGetNearestNeighbors() {
 		Eigen::Vector3d reference_atom { sorted_positions.SrPositions.at(reference_atom_id) };
 		std::vector<std::pair<size_t, double>> reference_atom_NN { Sr_NN.Sr_NN_ids.at(reference_atom_id) }; 
 
-		//std::cout << reference_atom.transpose() << '\n';
 		for(const std::pair<size_t, double> &NN_ids : reference_atom_NN) {
-			Eigen::Vector3d current_atom { sorted_positions.SrPositions.at(NN_ids.first) };
-			Eigen::Vector3d dr { current_atom - reference_atom };
-
-			double dx { std::abs(dr[0]) };
-			double dy { std::abs(dr[1]) };
-			double dz { std::abs(dr[2]) };
-
-			dx -= static_cast<int>(dx + 0.5);
-			dy -= static_cast<int>(dy + 0.5);
-			dz -= static_cast<int>(dz + 0.5);
-			
-			double dist  {(cell_matrix*Eigen::Vector3d(dx, dy, dz)).norm()};
-			
-			std::cout << "Ref: " << reference_atom_id << "  " << "Cur: " << NN_ids.first << "  " << "dist: " << dist << std::endl;
+			std::cout << "Ref: " << reference_atom_id << "  " << "Cur: " << NN_ids.first << "  " << "dist: " << NN_ids.second << std::endl;
 		}
 		std::cout << '\n';
 	}
