@@ -10,13 +10,17 @@
 #include <optional>
 #include <Eigen/Core>
 
+
 #include <iostream>
 #define print(x) std::cout << x << std::endl
 
+// TODO use omp to parallelised
+// write different behavior for other filetypes (CONTCAR, XDATCAR, xyz, ...), calculate atom numbers??? 
 namespace PolFinder {
 
 	using Positions = std::vector<Eigen::Vector3d>;
 	using Position = Eigen::Vector3d;
+	using Vector = Eigen::Vector3d;
 	using NNIDs = std::vector<std::pair<size_t, double>>;
 
 	struct AtomPositions {
@@ -42,7 +46,7 @@ namespace PolFinder {
 		inline Eigen::Vector3d convert_coordinates(Position &vector, const Eigen::Matrix3d &cell_matrix) {
 			return cell_matrix*vector;
 		}
-		// TODO add coordinate conversion utility to get_distance
+
 		inline auto get_distance = [](const Position &atom_1, const Position &atom2, const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt){
 
 			Eigen::Vector3d dr { atom2 - atom_1 };
@@ -97,10 +101,13 @@ namespace PolFinder {
 			NN_arr.Ti_NN_ids.push_back(ref_atom_Ti_ids);
 			NN_arr.O_NN_ids.push_back(ref_atom_O_ids);
 		};
+
+		inline auto getTranslationVec = [](const Position &pos1, const Position &pos2 = { 0, 0, 0 }) {
+			return (pos1 - pos2);
+		};
 	}
 	
 
-	// write different behavior for other filetypes (CONTCAR, XDATCAR, xyz, ...), calculate atom numbers??? for end file and then parallelised for loop 
 	inline Positions loadPosFromFile(std::string filename, uint head=0, long tail_start=-1, const char* filetype="POSCAR") {
 		if (std::strcmp(filetype, "POSCAR") != 0) {
 			throw std::runtime_error("Filetype not supported. (currently POSCAR only)");
@@ -134,13 +141,13 @@ namespace PolFinder {
 			// TODO proper error handling if read something else than str
 			// do read line with regex instead of hard coded whitespace length
 			line = line.substr(2, line.length()); // strip leading whitespace
-			std::string pos_x = line.substr(0, line.find("  "));
-			std::string pos_y = line.substr(pos_x.length()+2, line.find("  "));
-			std::string pos_z = line.substr(pos_x.length()+pos_y.length()+4, line.find(" "));
+			//std::string pos_x = line.substr(0, line.find("  "));
+			//std::string pos_y = line.substr(pos_x.length()+2, line.find("  "));
+			//std::string pos_z = line.substr(pos_x.length()+pos_y.length()+4, line.find(" "));
 			
-			//std::string pos_x = line.substr(0, line.find(" "));
-			//std::string pos_y = line.substr(pos_x.length()+1, line.find(" "));
-			//std::string pos_z = line.substr(pos_x.length()+pos_y.length()+2, line.length());
+			std::string pos_x = line.substr(0, line.find(" "));
+			std::string pos_y = line.substr(pos_x.length()+1, line.find(" "));
+			std::string pos_z = line.substr(pos_x.length()+pos_y.length()+2, line.length());
 			positions.emplace_back(std::stod(pos_x), std::stod(pos_y), std::stod(pos_z));
 		}
 		
@@ -187,5 +194,4 @@ namespace PolFinder {
 		return std::vector<NearestNeighbors>({ Sr_nearest_neighbors, Ti_nearest_neighbors, O_nearest_neighbors });
 	}
 
-	// TODO correct NN calculations with PBC
 }
