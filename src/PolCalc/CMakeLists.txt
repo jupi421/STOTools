@@ -1,4 +1,4 @@
-project(PolFinder)
+project(PolCalc)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -19,10 +19,10 @@ FetchContent_declare(
 )
 FetchContent_MakeAvailable(Eigen)
 
-#pybind11_add_module(polfinder main.cpp) 
-add_library(polfinder_lib INTERFACE)
-target_include_directories(polfinder_lib INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(polfinder_lib INTERFACE Eigen3::Eigen)
+#pybind11_add_module(polcalc main.cpp) 
+add_library(polcalc_lib INTERFACE)
+target_include_directories(polcalc_lib INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(polcalc_lib INTERFACE Eigen3::Eigen)
 
 add_executable(test tests.cpp)
-target_link_libraries(test PRIVATE polfinder_lib)
+target_link_libraries(test PRIVATE polcalc_lib)

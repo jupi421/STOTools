@@ -1,11 +1,11 @@
-#include <polfinder.hpp>
+#include <polcalc.hpp>
 #include <Eigen/Core>
 #include <vector>
 
-const char* name = "./POSCAR_sto_large_bulk";
+const char* name = "./POSCAR";
 
 void testFileReader() {
-	PolFinder::Positions test = PolFinder::loadPosFromFile(name, 8, 105);
+	PolCalc::Positions test = PolCalc::loadPosFromFile(name, 8, 105);
 	for(auto &i : test) {
 		//std::printf("  %.16f  %.16f  %.16f\n", i[0], i[1], i[2]);
 	}
@@ -13,17 +13,17 @@ void testFileReader() {
 }
 
 void testSortPositions() {
-	PolFinder::Positions positions = PolFinder::loadPosFromFile(name, 8);
+	PolCalc::Positions positions = PolCalc::loadPosFromFile(name, 8);
 
-	//PolFinder::AtomPositions sorted_positions = PolFinder::sortPositionsByType(positions, 96000, 96000, 288000);
-	//PolFinder::Positions Sr_positions = PolFinder::loadPosFromFile(name, 8, 96000+8+1);
-	//PolFinder::Positions Ti_positions = PolFinder::loadPosFromFile(name, 96008, 96008+8+1 +96000);
-	//PolFinder::Positions O_positions = PolFinder::loadPosFromFile(name, 96008+8+96000+96);
+	//PolCalc::AtomPositions sorted_positions = PolCalc::sortPositionsByType(positions, 96000, 96000, 288000);
+	//PolCalc::Positions Sr_positions = PolCalc::loadPosFromFile(name, 8, 96000+8+1);
+	//PolCalc::Positions Ti_positions = PolCalc::loadPosFromFile(name, 96008, 96008+8+1 +96000);
+	//PolCalc::Positions O_positions = PolCalc::loadPosFromFile(name, 96008+8+96000+96);
 
-	//PolFinder::AtomPositions sorted_positions = PolFinder::sortPositionsByType(positions, 96, 96, 288);
-	//PolFinder::Positions Sr_positions = PolFinder::loadPosFromFile(name, 8, 105);
-	//PolFinder::Positions Ti_positions = PolFinder::loadPosFromFile(name, 104, 105+96);
-	//PolFinder::Positions O_positions = PolFinder::loadPosFromFile(name, 104+96);
+	//PolCalc::AtomPositions sorted_positions = PolCalc::sortPositionsByType(positions, 96, 96, 288);
+	//PolCalc::Positions Sr_positions = PolCalc::loadPosFromFile(name, 8, 105);
+	//PolCalc::Positions Ti_positions = PolCalc::loadPosFromFile(name, 104, 105+96);
+	//PolCalc::Positions O_positions = PolCalc::loadPosFromFile(name, 104+96);
 
 	//for(size_t i { 0 }; i < Sr_positions.size(); i++){
 	//	assert(sorted_positions.SrPositions[i][0] == Sr_positions[i][0]);
@@ -57,13 +57,13 @@ void testGetNearestNeighbors() {
 	//				0,		   19.72565, 0,
 	//				0,		   0,	    19.72565;
 
-	PolFinder::Positions positions = PolFinder::loadPosFromFile(name, 8);
-	PolFinder::AtomPositions sorted_positions = PolFinder::sortPositionsByType(positions, 96000, 96000, 288000);
-	std::vector<PolFinder::NearestNeighbors> nearest_neighbors = PolFinder::getNearestNeighbors(sorted_positions, 8);
+	PolCalc::Positions positions = PolCalc::loadPosFromFile(name, 8);
+	PolCalc::AtomPositions sorted_positions = PolCalc::sortPositionsByType(positions, 96, 96, 288);
+	std::vector<PolCalc::NearestNeighbors> nearest_neighbors = PolCalc::getNearestNeighborsAll(sorted_positions, 8, cell_matrix);
 	
-	PolFinder::NearestNeighbors Sr_NN { nearest_neighbors.at(0) }; 
-	PolFinder::NearestNeighbors Ti_NN { nearest_neighbors.at(1) };
-	PolFinder::NearestNeighbors O_NN { nearest_neighbors.at(2) };
+	PolCalc::NearestNeighbors Sr_NN { nearest_neighbors.at(0) }; 
+	PolCalc::NearestNeighbors Ti_NN { nearest_neighbors.at(1) };
+	PolCalc::NearestNeighbors O_NN { nearest_neighbors.at(2) };
 
 	//assert(Sr_NN.Sr_NN_ids.size() == 20);
 	//assert(Sr_NN.Ti_NN_ids.size() == 20);

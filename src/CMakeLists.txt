@@ -1,1 +1,1 @@
-add_subdirectory(PolFinder)
+add_subdirectory(PolCalc)
