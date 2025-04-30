@@ -93,6 +93,7 @@ namespace PolCalc {
 			return nearest_image.norm();//squaredNorm();
 		};
 
+		// rewrite this so i can get the nth order NN for a reference atom with just passing the order as a parameter, math for partitioning should be done internally
 		static inline NNIdSqDist findNNearest(const Position &reference_atom, const Positions &atom_arr, const size_t n, const size_t reference_atom_id, const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt) {
 			std::vector<std::pair<size_t, double>> nearest_neighbors;
 			nearest_neighbors.reserve(atom_arr.size());
@@ -104,7 +105,10 @@ namespace PolCalc {
 
 			nearest_neighbors.erase(nearest_neighbors.begin() + reference_atom_id);
 
-			std::ranges::sort(nearest_neighbors, [](const auto &p1, const auto &p2){
+			std::ranges::nth_element(nearest_neighbors, nearest_neighbors.begin() + n, [](const auto &pair1, const auto &pair2){
+				return pair1.second < pair2.second;
+			});
+			std::ranges::sort(nearest_neighbors.begin(), nearest_neighbors.begin() + n, [](const auto &p1, const auto &p2){
 				return p1.second < p2.second;
 			});
 
@@ -255,6 +259,7 @@ namespace PolCalc {
 			for (Position &atom : tetragonal_UC.atoms) {
 				atom += COM;
 			}
+			// when calculating the msd make sure distance is taken from the nearest atoms
 		}
 	}
 }
