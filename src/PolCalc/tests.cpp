@@ -115,7 +115,7 @@ void testGetNearestNeighbors() {
 	double threshold { };
 	for(size_t reference_atom_id { 0 }; reference_atom_id < Sr_NN.Sr_NN_ids.size(); reference_atom_id++) {
 		Eigen::Vector3d reference_atom { sorted_positions.SrPositions.at(reference_atom_id) };
-		std::vector<std::pair<size_t, double>> reference_atom_NN { Sr_NN.Sr_NN_ids.at(reference_atom_id) }; 
+		std::vector<std::pair<size_t, double>> reference_atom_NN { Sr_NN.Ti_NN_ids.at(reference_atom_id) }; 
 
 		for(const std::pair<size_t, double> &NN_ids : reference_atom_NN) {
 			std::cout << "Ref: " << reference_atom_id << "  " << "Cur: " << NN_ids.first << "  " << "dist: " << NN_ids.second << std::endl;
