@@ -59,12 +59,16 @@ void testGetNearestNeighbors() {
 
 	PolCalc::Positions positions = PolCalc::loadPosFromFile(name, 8);
 	PolCalc::AtomPositions sorted_positions = PolCalc::sortPositionsByType(positions, 96, 96, 288);
-	std::vector<PolCalc::NearestNeighbors> nearest_neighbors = PolCalc::getNearestNeighborsAll(sorted_positions, 8, cell_matrix);
+	std::vector<PolCalc::NearestNeighborsByType> nearest_neighbors = PolCalc::getNearestNeighborsAll(sorted_positions, 8, cell_matrix);
 	
-	PolCalc::NearestNeighbors Sr_NN { nearest_neighbors.at(0) }; 
-	PolCalc::NearestNeighbors Ti_NN { nearest_neighbors.at(1) };
-	PolCalc::NearestNeighbors O_NN { nearest_neighbors.at(2) };
+	PolCalc::NearestNeighborsByType Sr_NN { nearest_neighbors.at(0) }; 
+	PolCalc::NearestNeighborsByType Ti_NN { nearest_neighbors.at(1) };
+	PolCalc::NearestNeighborsByType O_NN { nearest_neighbors.at(2) };
 
+	std::cout << '\n';
+	for (size_t i { 96 }; i < 2*96; i++) {
+		std::cout << (positions.at(i) == sorted_positions.TiPositions.at(i-96)) << std::endl;
+	}
 	//assert(Sr_NN.Sr_NN_ids.size() == 20);
 	//assert(Sr_NN.Ti_NN_ids.size() == 20);
 	//assert(Sr_NN.O_NN_ids.size() == 20);
@@ -118,7 +122,7 @@ void testGetNearestNeighbors() {
 		std::vector<std::pair<size_t, double>> reference_atom_NN { Sr_NN.Ti_NN_ids.at(reference_atom_id) }; 
 
 		for(const std::pair<size_t, double> &NN_ids : reference_atom_NN) {
-			std::cout << "Ref: " << reference_atom_id << "  " << "Cur: " << NN_ids.first << "  " << "dist: " << NN_ids.second << std::endl;
+			std::cout << "Ref: " << reference_atom_id << "  " << "Cur: " << (NN_ids.first + 96) << "  " << "dist: " << NN_ids.second << std::endl;
 		}
 		std::cout << '\n';
 	}

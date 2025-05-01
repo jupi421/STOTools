@@ -8,7 +8,9 @@
 #include <ranges>
 #include <utility>
 #include <optional>
+#include <cmath>
 #include <Eigen/Core>
+#include <Eigen/Geometry>
 
 
 #include <iostream>
@@ -61,7 +63,7 @@ namespace PolCalc {
 		}
 	};
 
-	struct NearestNeighbors {
+	struct NearestNeighborsByType {
 		std::vector<NNIdSqDist> Sr_NN_ids;
 		std::vector<NNIdSqDist> Ti_NN_ids;
 		std::vector<NNIdSqDist> O_NN_ids;
@@ -90,11 +92,10 @@ namespace PolCalc {
 				nearest_image = helper::convertCoordinates(nearest_image, cell_matrix.value());
 			}
 
-			return nearest_image.norm();//squaredNorm();
-		};
+			return nearest_image.norm(); //squaredNorm();
+		}
 
-		// rewrite this so i can get the nth order NN for a reference atom with just passing the order as a parameter, math for partitioning should be done internally
-		static inline NNIdSqDist findNNearest(const Position &reference_atom, const Positions &atom_arr, const size_t n, const size_t reference_atom_id, const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt) {
+		static inline NNIdSqDist findNNearest(const Position &reference_atom, const Positions &atom_arr, const size_t n, const size_t reference_atom_id, const bool is_same_atom_type, const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt) {
 			std::vector<std::pair<size_t, double>> nearest_neighbors;
 			nearest_neighbors.reserve(atom_arr.size());
 		
@@ -103,11 +104,14 @@ namespace PolCalc {
 				nearest_neighbors.emplace_back(std::make_pair(idx++, getSquaredDistance(reference_atom, other_atom, cell_matrix)));
 			}
 
-			nearest_neighbors.erase(nearest_neighbors.begin() + reference_atom_id);
+			if (is_same_atom_type) {
+				nearest_neighbors.erase(nearest_neighbors.begin() + reference_atom_id);
+			}
 
 			std::ranges::nth_element(nearest_neighbors, nearest_neighbors.begin() + n, [](const auto &pair1, const auto &pair2){
 				return pair1.second < pair2.second;
 			});
+
 			std::ranges::sort(nearest_neighbors.begin(), nearest_neighbors.begin() + n, [](const auto &p1, const auto &p2){
 				return p1.second < p2.second;
 			});
@@ -118,23 +122,23 @@ namespace PolCalc {
 
 			return n_min_neighbors;
 	
-		};
+		}
 
-		static inline void getNNAll(const AtomPositions &atom_arr, const size_t n, NearestNeighbors &NN_arr, const Position &ref_atom, const size_t ref_atom_id, const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt) {
-			NNIdSqDist ref_atom_Sr_ids { findNNearest(ref_atom, atom_arr.SrPositions, n, ref_atom_id, cell_matrix) };
-			NNIdSqDist ref_atom_Ti_ids { findNNearest(ref_atom, atom_arr.TiPositions, n, ref_atom_id, cell_matrix) };
-			NNIdSqDist ref_atom_O_ids { findNNearest(ref_atom, atom_arr.OPositions, n, ref_atom_id, cell_matrix) };
+		static inline void getNNAll(const AtomPositions &atom_arr, const size_t n, NearestNeighborsByType &NN_arr, const Position &ref_atom, const size_t ref_atom_id, const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt) {
+			NNIdSqDist ref_atom_Sr_ids { findNNearest(ref_atom, atom_arr.SrPositions, n, ref_atom_id, true, cell_matrix) };
+			NNIdSqDist ref_atom_Ti_ids { findNNearest(ref_atom, atom_arr.TiPositions, n, ref_atom_id, false, cell_matrix) };
+			NNIdSqDist ref_atom_O_ids { findNNearest(ref_atom, atom_arr.OPositions, n, ref_atom_id, false, cell_matrix) };
 
 			NN_arr.Sr_NN_ids.push_back(ref_atom_Sr_ids);
 			NN_arr.Ti_NN_ids.push_back(ref_atom_Ti_ids);
 			NN_arr.O_NN_ids.push_back(ref_atom_O_ids);
-		};
+		}
 
-		static inline void getNN(const Positions &atom_arr, const size_t n,  std::vector<NNIdSqDist> &NN_arr, const Position &ref_atom, const size_t ref_atom_id, const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt) {
-			NNIdSqDist ref_atom_NN { findNNearest(ref_atom, atom_arr, n, ref_atom_id, cell_matrix) };
+		static inline void getNN(const Positions &atom_arr, const size_t n,  std::vector<NNIdSqDist> &NN_arr, const Position &ref_atom, const size_t ref_atom_id, const bool same_atom_type, const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt) {
+			NNIdSqDist ref_atom_NN { findNNearest(ref_atom, atom_arr, n, ref_atom_id, same_atom_type, cell_matrix) };
 
 			NN_arr.push_back(ref_atom_NN);
-		};
+		}
 
 		static inline Vector getCOM(const Positions &atoms) {
 			Vector COM = Eigen::Vector3d(0, 0, 0);
@@ -144,11 +148,57 @@ namespace PolCalc {
 			}
 			
 			return COM;
-		};
+		}
 
 		static inline Vector getTranslationVec(const Position &pos1, const Position &pos2 = { 0, 0, 0 }) {
 			return (pos1 - pos2);
-		};
+		}
+		
+		static inline Position rotatePoint(const double angle, const Position &point);
+
+		static inline double getGrad(const double alpha, const Positions &pristine_UC, const Positions &local_UC) {
+			Vector rot_axis { Eigen::Vector3d(0, 1, 0) };
+			Eigen::AngleAxisd angle_axis { Eigen::AngleAxisd(alpha, rot_axis) };
+			Eigen::Matrix3d R { angle_axis.toRotationMatrix() };
+			Eigen::Matrix3d dR;
+
+			double sin { std::sin(alpha) };
+			double cos { std::cos(alpha) };
+
+			dR << -sin, 0, cos,
+				     0, 1, 0,
+				  -cos, 0, -sin;
+
+
+			double grad { };
+			
+			//make sure to calculate distance between correct atoms
+			for (size_t i { }; i < pristine_UC.size(); i++) {
+				grad += (local_UC.at(i) - R*pristine_UC.at(i)).transpose()*(dR*pristine_UC.at(i));
+			}
+			
+			return 2*grad;
+		}
+		
+		static inline double gradientDescent(double step_size, const Positions &pristine_UC, const Positions &local_UC) {
+			double alpha { EIGEN_PI/4 };
+			constexpr double alpha_diff_threshold { 1e-12 };
+			constexpr uint max_iter { 1000 };
+
+			for (uint i { }; i < max_iter; i++) {
+				double gradMSD { getGrad(alpha, pristine_UC, local_UC) };
+				
+				double prev_alpha { alpha };
+				alpha -= step_size * gradMSD;
+				double diff_alpha { prev_alpha - alpha };
+
+				if (diff_alpha <= alpha_diff_threshold) { 
+					return alpha;
+				}
+			}
+		
+			return alpha;
+		}
 	}
 	
 
@@ -212,12 +262,12 @@ namespace PolCalc {
 		return atom_positions;
 	}
 	
-	inline std::vector<NearestNeighbors> getNearestNeighborsAll(const AtomPositions &atom_arr, const size_t n, const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt) {
-		NearestNeighbors Sr_nearest_neighbors;
-		NearestNeighbors Ti_nearest_neighbors;
-		NearestNeighbors O_nearest_neighbors;
+	inline std::vector<NearestNeighborsByType> getNearestNeighborsAll(const AtomPositions &atom_arr, const size_t n, const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt) {
+		NearestNeighborsByType Sr_nearest_neighbors;
+		NearestNeighborsByType Ti_nearest_neighbors;
+		NearestNeighborsByType O_nearest_neighbors;
 		
-		auto getNNPerType = [&](const Positions &atom_type_positions, NearestNeighbors &atom_type_nn_container) {
+		auto getNNPerType = [&](const Positions &atom_type_positions, NearestNeighborsByType &atom_type_nn_container) {
 			size_t atom_id { 0 };
 			for (const Position &ref_atom : atom_type_positions) {
 				helper::getNNAll(atom_arr, n, atom_type_nn_container, ref_atom, atom_id++, cell_matrix);
@@ -229,21 +279,21 @@ namespace PolCalc {
 		getNNPerType(atom_arr.TiPositions, Ti_nearest_neighbors);
 		getNNPerType(atom_arr.OPositions, O_nearest_neighbors);
 	 
-		return std::vector<NearestNeighbors>({ Sr_nearest_neighbors, Ti_nearest_neighbors, O_nearest_neighbors });
+		return std::vector<NearestNeighborsByType>({ Sr_nearest_neighbors, Ti_nearest_neighbors, O_nearest_neighbors });
 	}
 
-	inline std::vector<NNIdSqDist> getNearestNeighbors(const Positions &atoms, const size_t n, const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt) {
+	inline std::vector<NNIdSqDist> getNearestNeighbors(const Positions &atoms, const size_t n, const bool is_same_atom_type, const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt) {
 		std::vector<NNIdSqDist> nearest_neighbors;
 		
 		size_t atom_id { 0 };
 		for (const Position &ref_atom : atoms) {
-			helper::getNN(atoms, n, nearest_neighbors, ref_atom, atom_id++, cell_matrix);
+			helper::getNN(atoms, n, nearest_neighbors, ref_atom, atom_id++, is_same_atom_type, cell_matrix);
 		}
 		
 		return nearest_neighbors;
 	}
 		
-	inline void getPolarization(const Positions &atoms, const std::vector<NNIdSqDist> &nearest_neighbors) {
+	inline void getPolarization(const double step_size, const Positions &atoms, const std::vector<NNIdSqDist> &nearest_neighbors) {
 		Positions local_UC;
 		local_UC.reserve(8);
 
@@ -256,10 +306,12 @@ namespace PolCalc {
 			TetragonalUC tetragonal_UC { };
 			Vector COM { helper::getCOM(local_UC) };
 			
-			for (Position &atom : tetragonal_UC.atoms) {
+			for (Position &atom : local_UC) {
 				atom += COM;
 			}
 			// when calculating the msd make sure distance is taken from the nearest atoms
+			
+			double alpha { helper::gradientDescent(step_size, tetragonal_UC.atoms, local_UC) };
 		}
 	}
 }
