@@ -67,7 +67,7 @@ void testGetNearestNeighbors() {
 
 	std::cout << '\n';
 	for (size_t i { 96 }; i < 2*96; i++) {
-		std::cout << (positions.at(i) == sorted_positions.TiPositions.at(i-96)) << std::endl;
+		std::cout << (positions.at(i) == sorted_positions.m_ti_positions.at(i-96)) << std::endl;
 	}
 	//assert(Sr_NN.Sr_NN_ids.size() == 20);
 	//assert(Sr_NN.Ti_NN_ids.size() == 20);
@@ -117,9 +117,9 @@ void testGetNearestNeighbors() {
 
 	// TODO test distances are within range 
 	double threshold { };
-	for(size_t reference_atom_id { 0 }; reference_atom_id < Sr_NN.Sr_NN_ids.size(); reference_atom_id++) {
-		Eigen::Vector3d reference_atom { sorted_positions.SrPositions.at(reference_atom_id) };
-		std::vector<std::pair<size_t, double>> reference_atom_NN { Sr_NN.Ti_NN_ids.at(reference_atom_id) }; 
+	for(size_t reference_atom_id { 0 }; reference_atom_id < Sr_NN.m_sr_nn_ids.size(); reference_atom_id++) {
+		Eigen::Vector3d reference_atom { sorted_positions.m_sr_positions.at(reference_atom_id) };
+		std::vector<std::pair<size_t, double>> reference_atom_NN { Sr_NN.m_ti_nn_ids.at(reference_atom_id) }; 
 
 		for(const std::pair<size_t, double> &NN_ids : reference_atom_NN) {
 			std::cout << "Ref: " << reference_atom_id << "  " << "Cur: " << (NN_ids.first + 96) << "  " << "dist: " << NN_ids.second << std::endl;
