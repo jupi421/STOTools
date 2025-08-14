@@ -53,9 +53,10 @@ std::vector<NNIdSqDist> getNearestNeighbors(const Positions &atoms,
 											const bool is_same_atom_type, 
 											const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt);
 
-Vector getCOM(const Positions &atoms);
 
 namespace helper {
+
+static inline Position getCOM(const Positions &atom);
 
 struct TetragonalUC {
 	// tetragonal unit cell with COM at origin
@@ -130,7 +131,7 @@ struct LocalUC {
 				angles.at(i) = getAngle(atoms_zeroed.at(i), nearest_neighbor);
 			}
 
-			std::array<size_t, angles.size()> angle_ids;
+			std::array<size_t, 4> angle_ids;
 			std::iota(angle_ids.begin(), angle_ids.end(), 0);
 
 			std::ranges::sort(angle_ids, [&angles](const size_t id1, const size_t id2) {
@@ -141,7 +142,7 @@ struct LocalUC {
 		};
 
 		m_atoms.reserve(8);
-		m_COM = getCOM(atoms);
+		m_COM = helper::getCOM(atoms);
 
 		Positions atoms_upper, atoms_lower;
 		atoms_upper.reserve(4);
@@ -168,6 +169,16 @@ struct LocalUC {
 	}
 
 };
+
+static inline Position getCOM(const Positions &atoms) {
+	Vector COM = Eigen::Vector3d(0, 0, 0);
+
+	for (const auto &atom : atoms) {
+		COM += atom;
+	}
+
+	return COM/atoms.size();
+}
 
 static inline Eigen::Vector3d convertCoordinates(Position &vector, const Eigen::Matrix3d &cell_matrix) {
 	return cell_matrix*vector;
@@ -267,16 +278,6 @@ static inline void getNN(const Positions &atom_arr,
 	NN_arr.push_back(ref_atom_NN);
 }
 
-static inline Vector getCOM(const Positions &atoms) {
-	Vector COM = Eigen::Vector3d(0, 0, 0);
-
-	for (const auto &atom : atoms) {
-		COM += atom;
-	}
-
-	return COM/atoms.size();
-}
-
 static inline Vector getTranslationVec(const Position &pos1, const Position &pos2 = { 0, 0, 0 }) {
 	return (pos1 - pos2);
 }
@@ -296,8 +297,8 @@ static inline double getGradMSD(const double alpha, const Positions &pristine_UC
 	Eigen::Matrix3d dR;
 
 	dR << -sin, 0, cos,
-		0, 1, 0,
-		-cos, 0, -sin;
+			 0, 0, 0,
+		  -cos, 0, -sin;
 
 
 	double grad { };
@@ -312,15 +313,15 @@ static inline double getGradMSD(const double alpha, const Positions &pristine_UC
 
 static inline double gradientDescent(double step_size, const TetragonalUC &pristine_UC, const LocalUC &local_UC) {
 	double alpha { local_UC.m_approx_tilt };
-	constexpr double alpha_diff_threshold { 1e-12 };
+	constexpr double threshold { 1e-12 };
 	constexpr uint max_iter { 1000 };
 
 	for (size_t i : std::ranges::views::iota(max_iter)) {
 		double prev_alpha { alpha };
 		alpha -= step_size * getGradMSD(alpha, pristine_UC.m_atoms, local_UC.m_atoms);
 
-		double diff_alpha { prev_alpha - alpha };
-		if (diff_alpha <= alpha_diff_threshold) { 
+		double diff_alpha { std::abs(prev_alpha - alpha) };
+		if (diff_alpha <= threshold) { 
 			return alpha;
 		}
 	}
