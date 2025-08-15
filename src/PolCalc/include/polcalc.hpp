@@ -13,9 +13,6 @@
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 
-#include <iostream>
-#define print(x) std::cout << x << std::endl
-
 // TODO use omp to parallelise on cpu or cuda
 // write different behavior for other filetypes (CONTCAR, XDATCAR, xyz, ...), calculate atom numbers??? 
 namespace PolCalc {
@@ -170,7 +167,7 @@ struct LocalUC {
 
 };
 
-static inline Position getCOM(const Positions &atoms) {
+inline Position getCOM(const Positions &atoms) {
 	Vector COM = Eigen::Vector3d(0, 0, 0);
 
 	for (const auto &atom : atoms) {
@@ -180,11 +177,11 @@ static inline Position getCOM(const Positions &atoms) {
 	return COM/atoms.size();
 }
 
-static inline Eigen::Vector3d convertCoordinates(Position &vector, const Eigen::Matrix3d &cell_matrix) {
+inline Eigen::Vector3d convertCoordinates(Position &vector, const Eigen::Matrix3d &cell_matrix) {
 	return cell_matrix*vector;
 }
 
-static inline double getDistance(const Position &atom_1,
+inline double getDistance(const Position &atom_1,
 								 const Position &atom2,
 								 const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt,
 								 const bool take_root = false) {
@@ -212,7 +209,7 @@ static inline double getDistance(const Position &atom_1,
 	return nearest_image.squaredNorm();
 }
 
-static inline NNIdSqDist findNNearest(const Position &reference_atom,
+inline NNIdSqDist findNNearest(const Position &reference_atom,
 									  const Positions &atom_arr,
 									  const size_t n,
 									  const size_t reference_atom_id,
@@ -247,7 +244,8 @@ static inline NNIdSqDist findNNearest(const Position &reference_atom,
 	return nearest_neighbors;
 }
 
-static inline void getNNAll(const AtomPositions &atom_arr,
+// keep for testing purposes
+inline void getNNAll(const AtomPositions &atom_arr,
 							const size_t n,
 							NearestNeighborsByType &NN_arr,
 							const Position &ref_atom,
@@ -264,21 +262,21 @@ static inline void getNNAll(const AtomPositions &atom_arr,
 	NN_arr.m_o_nn_ids.push_back(ref_atom_O_ids);
 }
 
-static inline void getNN(const Positions &atom_arr, 
-						 const size_t n,  
-						 std::vector<NNIdSqDist> &NN_arr,
-						 const Position &ref_atom,
-						 const size_t ref_atom_id,
-						 const bool same_atom_type,
-						 const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt,
-						 const bool sort = false) {
+inline void getNN(const Positions &atom_arr, 
+				  const size_t n,  
+				  std::vector<NNIdSqDist> &NN_arr, 
+				  const Position &ref_atom, 
+				  const size_t ref_atom_id, 
+				  const bool same_atom_type, 
+				  const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt, 
+				  const bool sort = false) {
 
 	NNIdSqDist ref_atom_NN { findNNearest(ref_atom, atom_arr, n, ref_atom_id, same_atom_type, cell_matrix, sort) };
 
 	NN_arr.push_back(ref_atom_NN);
 }
 
-static inline Vector getTranslationVec(const Position &pos1, const Position &pos2 = { 0, 0, 0 }) {
+inline Vector getTranslationVec(const Position &pos1, const Position &pos2 = { 0, 0, 0 }) {
 	return (pos1 - pos2);
 }
 
@@ -291,7 +289,7 @@ static inline Position rotatePoint(const double angle, const Position &point) {
 	
 }
 
-static inline double getGradMSD(const double alpha, const Positions &pristine_UC, const Positions &local_UC) {
+inline double getGradMSD(const double alpha, const Positions &pristine_UC, const Positions &local_UC) {
 	double sin { std::sin(alpha) };
 	double cos { std::cos(alpha) };
 	Eigen::Matrix3d dR;
@@ -311,7 +309,7 @@ static inline double getGradMSD(const double alpha, const Positions &pristine_UC
 	return 2*grad;
 }
 
-static inline double gradientDescent(double step_size, const TetragonalUC &pristine_UC, const LocalUC &local_UC) {
+inline double gradientDescent(double step_size, const TetragonalUC &pristine_UC, const LocalUC &local_UC) {
 	double alpha { local_UC.m_approx_tilt };
 	constexpr double threshold { 1e-12 };
 	constexpr uint max_iter { 1000 };
