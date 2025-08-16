@@ -2,6 +2,7 @@
 .cache/*
 build/*
 src/PolFinder/main.cpp
+src/PolFinder/*test*
 src/PolFinder/Poscar_test
 debug/*
 profiling/*

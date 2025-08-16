@@ -1,8 +1,9 @@
 #pragma once
 
 #include <fstream>
-#include <numeric>
 #include <stdexcept>
+#include <expected>
+#include <print>
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -13,54 +14,78 @@
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 
-// TODO use omp to parallelise on cpu or cuda
+// TODO use openACC to parallelise on cpu or cuda
 // write different behavior for other filetypes (CONTCAR, XDATCAR, xyz, ...), calculate atom numbers??? 
 namespace PolCalc {
 
 using Position = Eigen::Vector3d;
-using Vector = Eigen::Vector3d;
 using Positions = std::vector<Position>;
+using Vector = Eigen::Vector3d;
 using Vectors = std::vector<Vector>;
-using NNIdSqDist = std::vector<std::pair<size_t, double>>; //all single species NN ids for a specific reference atom with squared distance
+using NNIds = std::vector<std::pair<size_t, double>>; 
 
+enum class DWType {
+	HT, HH
+};
+
+enum class AtomType {
+	Sr, Ti, O, Unknown
+};
+
+struct Atom {
+	AtomType m_atom_type { AtomType::Unknown };
+	Position m_position { Position::Zero() };
+
+	Atom() {};
+	Atom(AtomType atom_type, const Position& position) 
+		: m_atom_type(atom_type), m_position(position)
+	{}
+};
+
+using Atoms = std::vector<Atom>;
 
 struct AtomPositions {
 
-	Positions m_sr_positions {};
-	Positions m_ti_positions {};
-	Positions m_o_positions {};
+	Atoms m_Sr {};
+	Atoms m_Ti {};
+	Atoms m_O {};
 
 	AtomPositions() {};
 	AtomPositions(const size_t N_Sr, const size_t N_Ti, const size_t N_O) {
-		m_sr_positions.reserve(N_Sr);
-		m_ti_positions.reserve(N_Ti);
-		m_o_positions.reserve(N_O);
+		m_Sr.reserve(N_Sr);
+		m_Ti.reserve(N_Ti);
+		m_O.reserve(N_O);
 	}
 };
 
 struct NearestNeighborsByType {
 
-	std::vector<NNIdSqDist> m_sr_nn_ids;
-	std::vector<NNIdSqDist> m_ti_nn_ids;
-	std::vector<NNIdSqDist> m_o_nn_ids;
+	std::vector<NNIds> m_sr_nn_ids;
+	std::vector<NNIds> m_ti_nn_ids;
+	std::vector<NNIds> m_o_nn_ids;
 };
 
-std::vector<NNIdSqDist> getNearestNeighbors(const Positions &atoms, 
-											const size_t n, 
-											const bool is_same_atom_type, 
-											const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt);
+std::expected<std::vector<NNIds>, std::string> getNearestNeighbors(const Atoms& atoms, 
+																   const Atoms& reference_atoms,
+																   const size_t n, 
+																   const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt);
 
 
 namespace helper {
 
-static inline Position getCOM(const Positions &atom);
+static inline Position getCOM(const Atoms &atom);
 
-struct TetragonalUC {
+struct UnitCell {
 	// tetragonal unit cell with COM at origin
-	Positions m_atoms { };
+	Atoms m_Sr_atoms { };
+	Atoms m_Ti_atoms { };
+	Atoms m_O_atoms { };
+	Position m_COM { Position::Zero() };
 
-	TetragonalUC() {
-		m_atoms.reserve(8);
+	UnitCell() {};
+	// apply cell matrix so that everything stays in direct coordinates
+	UnitCell(Eigen::Matrix3d& cell_matrix) {
+		m_Sr_atoms.reserve(8);
 
 		constexpr double a { 3.905 };
 		constexpr double c { 1.12 * a };
@@ -69,109 +94,156 @@ struct TetragonalUC {
 		Eigen::Vector3d ey = Eigen::Vector3d(0, 1, 0);
 		Eigen::Vector3d ez = Eigen::Vector3d(0, 0, 1);
 
-		m_atoms.emplace_back(-0.5*a*ex + 0.5*a*ey - 0.5*c*ez );
-		m_atoms.emplace_back(0.5*a*ex + 0.5*a*ey - 0.5*c*ez );
-		m_atoms.emplace_back(0.5*a*ex + 0.5*a*ey + 0.5*c*ez );
-		m_atoms.emplace_back(-0.5*a*ex + 0.5*a*ey + 0.5*c*ez );
-		m_atoms.emplace_back(-0.5*a*ex - 0.5*a*ey - 0.5*c*ez );
-		m_atoms.emplace_back(0.5*a*ex - 0.5*a*ey - 0.5*c*ez );
-		m_atoms.emplace_back(0.5*a*ex - 0.5*a*ey + 0.5*c*ez );
-		m_atoms.emplace_back(-0.5*a*ex - 0.5*a*ey + 0.5*c*ez );
+		m_Sr_atoms.emplace_back(AtomType::Sr, -0.5*a*ex + 0.5*a*ey - 0.5*c*ez );
+		m_Sr_atoms.emplace_back(AtomType::Sr, 0.5*a*ex + 0.5*a*ey - 0.5*c*ez );
+		m_Sr_atoms.emplace_back(AtomType::Sr, 0.5*a*ex + 0.5*a*ey + 0.5*c*ez );
+		m_Sr_atoms.emplace_back(AtomType::Sr, -0.5*a*ex + 0.5*a*ey + 0.5*c*ez );
+		m_Sr_atoms.emplace_back(AtomType::Sr, -0.5*a*ex - 0.5*a*ey - 0.5*c*ez );
+		m_Sr_atoms.emplace_back(AtomType::Sr, 0.5*a*ex - 0.5*a*ey - 0.5*c*ez );
+		m_Sr_atoms.emplace_back(AtomType::Sr, 0.5*a*ex - 0.5*a*ey + 0.5*c*ez );
+		m_Sr_atoms.emplace_back(AtomType::Sr, -0.5*a*ex - 0.5*a*ey + 0.5*c*ez );
 	}
+
+	struct Displacements {
+		Vectors m_Sr_displacements { };
+		Vectors m_Ti_displacements { };
+		Vectors m_O_displacements { };
+	};
+
+	Displacements operator-() const;
+	void rotateUC();
 };
 
-struct LocalUC {
-	Positions m_atoms { };
-	Position m_COM { };
-	double m_approx_tilt { };
+struct LocalUC : UnitCell {
 
-	LocalUC(const Positions &atoms) {
-		auto getLocalRefAxis = [&](const Positions &atoms) {
-			// TODO overload function for NN for type Position
-			std::vector<NNIdSqDist> nearest_neighbors { getNearestNeighbors(atoms, 1, true) };
-			size_t nearest_neighbor_id { nearest_neighbors.at(0).at(0).first }; // get nearest neighbor for atom at atoms[0] 
-			
-			Vector local_axis { atoms.at(nearest_neighbor_id) - atoms.at(0) };
-			if (local_axis[0] < 0) {
-				local_axis *= -1; // make sure to take always the vector that points to the right to account for the correct rotaiton of the tetragon
+	enum class DWSide {
+		left, right, Unknown
+	};
+
+	double m_tilt { };
+	DWSide side { DWSide::Unknown };
+
+	private:
+
+	static Position minimumImage(const Position& pos) {
+		return pos.array() - pos.array().round();
+	}
+
+	static Position directCoordinates(const Position& pos, const Position& ref) {
+		Position temp { pos };
+		temp += ref;
+		for (size_t i : std::ranges::views::iota(3)) {
+			temp[i] -= floor(temp[i]);
+		}
+		return temp;
+	}
+
+	static double getAngle(const Position& atom) {
+		double angle { std::atan2(atom[2], atom[0]) };
+		if (angle < 0) {
+			angle += 2*M_PI;
+		}
+		return angle;
+	}
+
+	Vector getOrientation(DWType) const;
+
+	public:
+
+	LocalUC() {};
+	explicit LocalUC(const Atoms& corners, const Atom& center, DWType DW_type, double DW_center_x = 0.5, double tolerance = 1e-3) { // explicit to prevent implicit type conversions
+		
+		if (corners.size() != 8) {
+			throw std::runtime_error("LocalUC, Expected corners: 8, recieved: " + std::to_string(corners.size()));
+		}
+
+		m_Sr_atoms.reserve(8);
+		
+		Atoms corners_local { [&corners, &center](){
+			Atoms temp { corners };
+			for (Atom& atom : temp){
+				atom.m_position = minimumImage(atom.m_position - center.m_position);
 			}
+			return temp;
+		}()};
 
-	 		local_axis[1] = 0; // ignore y shift
+		Position COM_local = helper::getCOM(corners_local);
+		m_COM = directCoordinates(COM_local, center.m_position);
 
-			return local_axis;
-		};
+		if (m_COM[0] < DW_center_x) {
+			side = DWSide::left;
+		}
+		else if (m_COM[0] - DW_center_x < tolerance) { // consider thermal fluctuations
+			side = DWSide::left;
+		}
+		else {
+			side = DWSide::right;
+		}
 
-		auto getSortedAngle = [this](const Positions &atoms, const Position &nearest_neighbor) { 
-
-			auto getAngle = [this](const Position &r1, const Vector &x_axis) {
-				double alpha_point { atan2(r1[0], r1[2]) };
-				double alpha_ref_axis { atan2(x_axis[0], x_axis[2]) };
-
-				double alpha { alpha_point - alpha_ref_axis };
-
-				if (alpha < 0) {
-					alpha += 2*M_PI;
-				}
-
-				m_approx_tilt = alpha_ref_axis;
-
-				return alpha;
-			};
-
-			Positions atoms_zeroed { atoms };
-			for (Position &atom : atoms_zeroed) {
-				atom[1] = 0;
-			}
-
-			std::array<double, 4> angles;
-			for (const size_t i : std::ranges::views::iota(4)) {
-				angles.at(i) = getAngle(atoms_zeroed.at(i), nearest_neighbor);
-			}
-
-			std::array<size_t, 4> angle_ids;
-			std::iota(angle_ids.begin(), angle_ids.end(), 0);
-
-			std::ranges::sort(angle_ids, [&angles](const size_t id1, const size_t id2) {
-				return angles.at(id1) < angles.at(id2);
-			});
-
-			return angles;
-		};
-
-		m_atoms.reserve(8);
-		m_COM = helper::getCOM(atoms);
-
-		Positions atoms_upper, atoms_lower;
+		std::vector<std::pair<Atom, double>> atoms_upper, atoms_lower;
 		atoms_upper.reserve(4);
 		atoms_lower.reserve(4);
 
-		std::ranges::copy(atoms | std::ranges::views::filter([this](const Position &atom) { return atom[2] > this->m_COM[2]; }), std::back_inserter(atoms_upper));
-		std::ranges::copy(atoms | std::ranges::views::filter([this](const Position &atom) { return atom[2] < this->m_COM[2]; }), std::back_inserter(atoms_lower));
+		for (const Atom& corner : corners_local) {
+			double angle { getAngle(corner.m_position - COM_local) };
+			(corner.m_position[1] < COM_local[1] ? atoms_lower : atoms_upper).emplace_back(corner, angle);
+		}
 
-		
-		Vector local_x_axis { getLocalRefAxis(atoms_upper) }; // shouldn't really matter if the local x axis is taken from the upper half or lower half of the tetragon
-		//Position nearest_neighbor_lower { getLocalAxis(atoms_lower) };
-		
-		std::array<double, 4> angles_upper { getSortedAngle(atoms_upper, local_x_axis) };
-		std::array<double, 4> angles_lower { getSortedAngle(atoms_lower, local_x_axis) };
+		if (atoms_upper.size() != 4) {
+			throw std::runtime_error("LocalUC, atoms_upper requires 4 elements, got " + std::to_string(atoms_upper.size()));
+		}
+		else if (atoms_lower.size() != 4) {
+			throw std::runtime_error("LocalUC, atoms_lower requires 4 elements, got " + std::to_string(atoms_upper.size()));
+		}
 
-		m_atoms.push_back(atoms_upper.at(2));
-		m_atoms.push_back(atoms_upper.at(3));
-		m_atoms.push_back(atoms_upper.at(0));
-		m_atoms.push_back(atoms_upper.at(1));
-		m_atoms.push_back(atoms_lower.at(2));
-		m_atoms.push_back(atoms_lower.at(3));
-		m_atoms.push_back(atoms_lower.at(0));
-		m_atoms.push_back(atoms_lower.at(1));
+		for (auto& pair : atoms_upper) {
+			pair.first.m_position = directCoordinates(pair.first.m_position, center.m_position);
+		}
+		for (auto& pair : atoms_lower) {
+			pair.first.m_position = directCoordinates(pair.first.m_position, center.m_position);
+		}
+
+		auto sort_angles = [](auto& arr) { 
+			std::ranges::sort(arr, [](auto& pair1, auto& pair2) { 
+				return pair1.second < pair2.second;
+			});};
+
+		sort_angles(atoms_upper);
+		sort_angles(atoms_lower);
+
+		if (side == DWSide::left) {
+			m_Sr_atoms.push_back(atoms_upper.at(2).first);
+			m_Sr_atoms.push_back(atoms_upper.at(3).first);
+			m_Sr_atoms.push_back(atoms_upper.at(0).first);
+			m_Sr_atoms.push_back(atoms_upper.at(1).first);
+			m_Sr_atoms.push_back(atoms_lower.at(2).first);
+			m_Sr_atoms.push_back(atoms_lower.at(3).first);
+			m_Sr_atoms.push_back(atoms_lower.at(0).first);
+			m_Sr_atoms.push_back(atoms_lower.at(1).first);
+		}
+		else if (side == DWSide::right) {
+			m_Sr_atoms.push_back(atoms_upper.at(3).first);
+			m_Sr_atoms.push_back(atoms_upper.at(0).first);
+			m_Sr_atoms.push_back(atoms_upper.at(1).first);
+			m_Sr_atoms.push_back(atoms_upper.at(2).first);
+			m_Sr_atoms.push_back(atoms_lower.at(3).first);
+			m_Sr_atoms.push_back(atoms_lower.at(0).first);
+			m_Sr_atoms.push_back(atoms_lower.at(1).first);
+			m_Sr_atoms.push_back(atoms_lower.at(2).first);
+		}
 	}
+
+	void transformToMinimumImage();
+	void transformToDirect();
+	void rotateUC() = delete;
 
 };
 
-inline Position getCOM(const Positions &atoms) {
-	Vector COM = Eigen::Vector3d(0, 0, 0);
+inline Position getCOM(const Atoms &atoms) {
+	Vector COM = Vector::Zero();
 
 	for (const auto &atom : atoms) {
-		COM += atom;
+		COM += atom.m_position;
 	}
 
 	return COM/atoms.size();
@@ -181,55 +253,60 @@ inline Eigen::Vector3d convertCoordinates(Position &vector, const Eigen::Matrix3
 	return cell_matrix*vector;
 }
 
-inline double getDistance(const Position &atom_1,
-								 const Position &atom2,
-								 const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt,
-								 const bool take_root = false) {
+inline double getDistance(const Atom& atom1, 
+						  const Atom& atom2, 
+						  const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt, 
+						  const bool norm = false) {
 
-	Eigen::Vector3d dr { atom2 - atom_1 };
+	Vector dr { atom2.m_position - atom1.m_position };
+	dr.array() -= dr.array().round();
 
-	double dx { std::abs(dr[0]) };
-	double dy { std::abs(dr[1]) };
-	double dz { std::abs(dr[2]) };
+	Position minimum_image_distance { dr };
 
-	dx -= static_cast<int>(dx + 0.5);
-	dy -= static_cast<int>(dy + 0.5);
-	dz -= static_cast<int>(dz + 0.5);
-
-	Position nearest_image { Eigen::Vector3d(dx, dy, dz) };
-
-	if (cell_matrix.has_value()) {
-		nearest_image = helper::convertCoordinates(nearest_image, cell_matrix.value());
+	if (cell_matrix) {
+		minimum_image_distance = helper::convertCoordinates(minimum_image_distance, cell_matrix.value());
 	}
 
-	if (take_root) {
-		return nearest_image.norm(); 
+	if (norm) {
+		return minimum_image_distance.norm(); 
 	}
 
-	return nearest_image.squaredNorm();
+	return minimum_image_distance.squaredNorm();
 }
 
-inline NNIdSqDist findNNearest(const Position &reference_atom,
-									  const Positions &atom_arr,
-									  const size_t n,
-									  const size_t reference_atom_id,
-									  const bool is_same_atom_type,
-									  const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt,
-									  const bool sort = false) {
+inline std::expected<NNIds, std::string> findNearestN(const Atom& reference_atom, 
+														   const Atoms& atom_arr, 
+														   const size_t n, 
+														   const std::optional<size_t> exclude_idx,
+														   const std::optional<Eigen::Matrix3d>& cell_matrix = std::nullopt, 
+														   const bool sort = false) {
+
+	if (n > atom_arr.size()) {
+		return std::unexpected("n cannot exceed size of atom_arr!");
+	}
+	else if (n == 0) {
+		return std::unexpected("n cannot be 0!");
+	}
+
+	if (exclude_idx) {
+		if (n > atom_arr.size()-1 ) {
+			return std::unexpected("n cannot exceed size of atom_arr!");
+		}
+	}
 
 	std::vector<std::pair<size_t, double>> nearest_neighbors;
 	nearest_neighbors.reserve(atom_arr.size());
-
 	size_t idx { };
-	for (const Position &other_atom : atom_arr) {
+
+	for (const Atom& other_atom : atom_arr) {
+		if (exclude_idx && idx == exclude_idx.value()) {
+			idx++;
+			continue;
+		}
+
 		nearest_neighbors.emplace_back(idx++, getDistance(reference_atom, other_atom, cell_matrix));
-		//nearest_neighbors.emplace_back(std::make_pair(idx++, getDistance(reference_atom, other_atom, cell_matrix)));
 	}
-
-	if (is_same_atom_type) {
-		nearest_neighbors.erase(nearest_neighbors.begin() + reference_atom_id);
-	}
-
+	
 	std::ranges::nth_element(nearest_neighbors, nearest_neighbors.begin() + n, [](const auto &pair1, const auto &pair2){
 		return pair1.second < pair2.second;
 	});
@@ -242,38 +319,6 @@ inline NNIdSqDist findNNearest(const Position &reference_atom,
 
 	nearest_neighbors.resize(n);
 	return nearest_neighbors;
-}
-
-// keep for testing purposes
-inline void getNNAll(const AtomPositions &atom_arr,
-							const size_t n,
-							NearestNeighborsByType &NN_arr,
-							const Position &ref_atom,
-							const size_t ref_atom_id,
-							const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt,
-							const bool sort = true) {
-
-	NNIdSqDist ref_atom_Sr_ids { findNNearest(ref_atom, atom_arr.m_sr_positions, n, ref_atom_id, true, cell_matrix, sort) };
-	NNIdSqDist ref_atom_Ti_ids { findNNearest(ref_atom, atom_arr.m_ti_positions, n, ref_atom_id, false, cell_matrix, sort) };
-	NNIdSqDist ref_atom_O_ids { findNNearest(ref_atom, atom_arr.m_o_positions, n, ref_atom_id, false, cell_matrix, sort) };
-
-	NN_arr.m_sr_nn_ids.push_back(ref_atom_Sr_ids);
-	NN_arr.m_ti_nn_ids.push_back(ref_atom_Ti_ids);
-	NN_arr.m_o_nn_ids.push_back(ref_atom_O_ids);
-}
-
-inline void getNN(const Positions &atom_arr, 
-				  const size_t n,  
-				  std::vector<NNIdSqDist> &NN_arr, 
-				  const Position &ref_atom, 
-				  const size_t ref_atom_id, 
-				  const bool same_atom_type, 
-				  const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt, 
-				  const bool sort = false) {
-
-	NNIdSqDist ref_atom_NN { findNNearest(ref_atom, atom_arr, n, ref_atom_id, same_atom_type, cell_matrix, sort) };
-
-	NN_arr.push_back(ref_atom_NN);
 }
 
 inline Vector getTranslationVec(const Position &pos1, const Position &pos2 = { 0, 0, 0 }) {
@@ -289,7 +334,7 @@ static inline Position rotatePoint(const double angle, const Position &point) {
 	
 }
 
-inline double getGradMSD(const double alpha, const Positions &pristine_UC, const Positions &local_UC) {
+inline double getGradMSD(const double alpha, const Atoms &pristine_UC, const Atoms &local_UC) {
 	double sin { std::sin(alpha) };
 	double cos { std::cos(alpha) };
 	Eigen::Matrix3d dR;
@@ -303,20 +348,20 @@ inline double getGradMSD(const double alpha, const Positions &pristine_UC, const
 
 	//make sure to calculate distance between correct atoms
 	for (size_t i : std::ranges::views::iota(pristine_UC.size())) {
-		grad += (local_UC.at(i) - rotatePoint(alpha, pristine_UC.at(i))).transpose()*(dR*pristine_UC.at(i));
+		grad += (local_UC.at(i).m_position - rotatePoint(alpha, pristine_UC.at(i).m_position)).transpose()*(dR*pristine_UC.at(i).m_position);
 	}
 
 	return 2*grad;
 }
 
-inline double gradientDescent(double step_size, const TetragonalUC &pristine_UC, const LocalUC &local_UC) {
-	double alpha { local_UC.m_approx_tilt };
+inline double gradientDescent(double step_size, const UnitCell &pristine_UC, const LocalUC &local_UC) {
+	double alpha { local_UC.m_tilt };
 	constexpr double threshold { 1e-12 };
 	constexpr uint max_iter { 1000 };
 
 	for (size_t i : std::ranges::views::iota(max_iter)) {
 		double prev_alpha { alpha };
-		alpha -= step_size * getGradMSD(alpha, pristine_UC.m_atoms, local_UC.m_atoms);
+		alpha -= step_size * getGradMSD(alpha, pristine_UC.m_Sr_atoms, local_UC.m_Sr_atoms);
 
 		double diff_alpha { std::abs(prev_alpha - alpha) };
 		if (diff_alpha <= threshold) { 
@@ -328,123 +373,170 @@ inline double gradientDescent(double step_size, const TetragonalUC &pristine_UC,
 }
 }
 
-inline Positions loadPosFromFile(std::string filename, uint head=0, long tail_start=-1, const char* filetype="POSCAR") {
-	if (std::strcmp(filetype, "POSCAR") != 0) {
-		throw std::runtime_error("Filetype not supported. (currently POSCAR only)");
-	}
 
-	std::ifstream file { filename };
+inline Positions loadPosFromFile(std::string filename,
+                                 uint head = 0,
+                                 long tail_start = -1,
+                                 const char* filetype = "POSCAR")
+{
+    if (std::strcmp(filetype, "POSCAR") != 0) {
+        throw std::runtime_error("Filetype not supported. (currently POSCAR only)");
+    }
 
-	if (!file.is_open()) {
-		throw std::runtime_error("Failed loading file!");
-	}
+    std::ifstream file{filename};
+    if (!file.is_open()) {
+        throw std::runtime_error("Failed loading file: " + filename);
+    }
 
-	std::string line;
-	uint skip { head };
-	uint line_num { 0 };
-	Position position;
-	Positions positions;
+    std::string line;
+    // skip header lines
+    for (uint i = 0; i < head && std::getline(file, line); ++i) { /* skip */ }
 
-	while(std::getline(file, line)) {
+    Positions positions;
+    long line_num = static_cast<long>(head);
 
-		++line_num;
+    while (std::getline(file, line)) {
+        ++line_num;
+        if (tail_start > 0 && line_num >= tail_start) break;
 
-		if (skip) {
-			--skip;
-			continue;
-		}
+        // Try to read 3 numbers from the line, ignoring whitespace
+        std::istringstream iss(line);
+        double x, y, z;
+        if (!(iss >> x >> y >> z)) {
+            // Non-coordinate line (blank / comments) → skip quietly
+            // If you prefer hard failure, replace with:
+            // throw std::runtime_error("Parse error at line " + std::to_string(line_num) + ": '" + line + "'");
+            continue;
+        }
+        positions.emplace_back(x, y, z);
+    }
 
-		if (line_num == tail_start) {
-			break;	
-		}
-
-		// TODO proper error handling if read something else than str
-		// do read line with regex instead of hard coded whitespace length
-		line = line.substr(2, line.length()); // strip leading whitespace
-		std::string pos_x = line.substr(0, line.find("  "));
-		std::string pos_y = line.substr(pos_x.length()+2, line.find("  "));
-		std::string pos_z = line.substr(pos_x.length()+pos_y.length()+4, line.find(" "));
-
-		//std::string pos_x = line.substr(0, line.find(" "));
-		//std::string pos_y = line.substr(pos_x.length()+1, line.find(" "));
-		//std::string pos_z = line.substr(pos_x.length()+pos_y.length()+2, line.length());
-		positions.emplace_back(std::stod(pos_x), std::stod(pos_y), std::stod(pos_z));
-	}
-
-	file.close();
-	return positions;
+    return positions;
 }
 
-inline AtomPositions sortPositionsByType(std::vector<Position> positions, const size_t N_Sr, const size_t N_Ti, const size_t N_O) {
-	AtomPositions atom_positions(N_Sr, N_Ti, N_O);
-	std::ranges::copy(positions | std::views::take(N_Sr), std::back_inserter(atom_positions.m_sr_positions));
-	std::ranges::copy(positions | std::views::drop(N_Sr) | std::views::take(N_Ti), std::back_inserter(atom_positions.m_ti_positions));
-	std::ranges::copy(positions | std::views::drop(N_Sr+N_Ti) | std::views::take(N_O), std::back_inserter(atom_positions.m_o_positions));
+//inline Positions loadPosFromFile(std::string filename, uint head=0, long tail_start=-1, const char* filetype="POSCAR") {
+//	if (std::strcmp(filetype, "POSCAR") != 0) {
+//		throw std::runtime_error("Filetype not supported. (currently POSCAR only)");
+//	}
+//
+//	std::ifstream file { filename };
+//
+//	if (!file.is_open()) {
+//		throw std::runtime_error("Failed loading file!");
+//	}
+//
+//	std::string line;
+//	uint skip { head };
+//	uint line_num { 0 };
+//	Positions positions;
+//
+//	while(std::getline(file, line)) {
+//
+//		++line_num;
+//
+//		if (skip) {
+//			--skip;
+//			continue;
+//		}
+//
+//		if (line_num == tail_start) {
+//			break;	
+//		}
+//
+//		// TODO proper error handling if read something else than str
+//		// do read line with regex instead of hard coded whitespace length
+//		line = line.substr(2, line.length()); // strip leading whitespace
+//		std::string pos_x = line.substr(0, line.find("  "));
+//		std::string pos_y = line.substr(pos_x.length()+2, line.find("  "));
+//		std::string pos_z = line.substr(pos_x.length()+pos_y.length()+4, line.find(" "));
+//
+//		//std::string pos_x = line.substr(0, line.find(" "));
+//		//std::string pos_y = line.substr(pos_x.length()+1, line.find(" "));
+//		//std::string pos_z = line.substr(pos_x.length()+pos_y.length()+2, line.length());
+//		positions.emplace_back(std::stod(pos_x), std::stod(pos_y), std::stod(pos_z));
+//	}
+//
+//	file.close();
+//	return positions;
+//}
 
-	assert(atom_positions.m_sr_positions.size() == N_Sr);
-	assert(atom_positions.m_ti_positions.size() == N_Ti);
-	assert(atom_positions.m_o_positions.size() == N_O);
+inline std::expected<AtomPositions, std::string> sortPositionsByType(const Positions& positions, const size_t N_Sr, const size_t N_Ti, const size_t N_O) {
+	AtomPositions atom_positions(N_Sr, N_Ti, N_O);
+	std::ranges::copy(positions 
+				   | std::views::transform([](const Position& positions){ return Atom(AtomType::Sr, positions); }) 
+				   | std::views::take(N_Sr), std::back_inserter(atom_positions.m_Sr));
+	std::ranges::copy(positions 
+				   | std::views::transform([](const Position& positions){ return Atom(AtomType::Ti, positions); }) 
+				   | std::views::drop(N_Sr) | std::views::take(N_Ti), std::back_inserter(atom_positions.m_Ti));
+	std::ranges::copy(positions 
+				   | std::views::transform([](const Position& positions){ return Atom(AtomType::O, positions); }) 
+				   | std::views::drop(N_Sr+N_Ti) 
+				   | std::views::take(N_O), std::back_inserter(atom_positions.m_O));
+
+	if (atom_positions.m_Sr.size() != N_Sr) {
+		return std::unexpected("m_Sr positions and N_Sr differ");
+	};
+	if (atom_positions.m_Ti.size() != N_Ti) {
+		return std::unexpected("m_Ti positions and N_Ti differ");
+	}
+	if (atom_positions.m_O.size() != N_O) {
+		return std::unexpected("m_O positions and N_O differ");
+	}
 
 	return atom_positions;
 }
 
-inline std::vector<NearestNeighborsByType> getNearestNeighborsAll(const AtomPositions &atom_arr, 
-																  const size_t n, 
-																  const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt) {
-	NearestNeighborsByType Sr_nearest_neighbors;
-	NearestNeighborsByType Ti_nearest_neighbors;
-	NearestNeighborsByType O_nearest_neighbors;
-
-	auto getNNPerType = [&](const Positions &atom_type_positions, NearestNeighborsByType &atom_type_nn_container) {
-		size_t atom_id { 0 };
-		for (const Position &ref_atom : atom_type_positions) {
-			helper::getNNAll(atom_arr, n, atom_type_nn_container, ref_atom, atom_id++, cell_matrix);
-		}
-		atom_id = 0;
-	};
-
-	getNNPerType(atom_arr.m_sr_positions, Sr_nearest_neighbors);
-	getNNPerType(atom_arr.m_ti_positions, Ti_nearest_neighbors);
-	getNNPerType(atom_arr.m_o_positions, O_nearest_neighbors);
-
-	return std::vector<NearestNeighborsByType>({ Sr_nearest_neighbors, Ti_nearest_neighbors, O_nearest_neighbors });
-}
-
-inline std::vector<NNIdSqDist> getNearestNeighbors(const Positions &atoms, 
-												   const size_t n, 
-												   const bool is_same_atom_type, 
-												   const std::optional<Eigen::Matrix3d> &cell_matrix) {
+inline std::expected<std::vector<NNIds>, std::string> getNearestNeighbors(const Atoms& atoms, 
+																		  const Atoms& ref_atoms,
+																		  const size_t n, 
+																		  const std::optional<Eigen::Matrix3d>& cell_matrix,
+																		  bool sort = false) {
 	
-	std::vector<NNIdSqDist> nearest_neighbors;
+	std::vector<NNIds> nearest_neighbors;
+	nearest_neighbors.reserve(ref_atoms.size());
 
 	size_t atom_id { 0 };
-	for (const Position &ref_atom : atoms) {
-		helper::getNN(atoms, n, nearest_neighbors, ref_atom, atom_id++, is_same_atom_type, cell_matrix);
+	for (const Atom& ref_atom : ref_atoms) {
+
+		std::optional<size_t> exclude_idx { std::nullopt };
+		if (&atoms == &ref_atoms) {
+			exclude_idx = atom_id;
+		}
+
+		//auto res = helper::getNN(atoms, n, nearest_neighbors, ref_atom, exclude_idx, cell_matrix);
+		auto res = helper::findNearestN(ref_atom, atoms, n, exclude_idx, cell_matrix, sort) 
+			.transform([&nearest_neighbors](auto&& res) { nearest_neighbors.push_back(std::move(res)); });
+
+		if (!res) {
+			return std::unexpected("On iteration " + std::to_string(atom_id) + ", in findNearestN: " + res.error());
+		}
+
+		atom_id++;
 	}
 
 	return nearest_neighbors;
 }
 
-inline void getPolarization(const double step_size, const Positions &atoms, const std::vector<NNIdSqDist> &nearest_neighbors) {
-	// atoms should be same elemenT as nearest_neighbors
-	const helper::TetragonalUC tetragonal_UC { };
+inline void getPolarization(const double step_size, const Atoms &atoms, const std::vector<NNIds> &nearest_neighbors) {
+	// atoms should be same element as nearest_neighbors
+	const helper::UnitCell tetragonal_UC { };
 
-	Positions local_UC_atoms;
+	Atoms local_UC_atoms;
 	local_UC_atoms.reserve(8);
 
 	if (atoms.size() != nearest_neighbors.size()) {
 		throw std::runtime_error("Mismatch in size of atoms and nearest_neighbors!");
 	}
 
-	for (const NNIdSqDist &pair_ref_atom_id_nn : nearest_neighbors) { // nearest neighbors for each center atom -> UC
+	for (const NNIds &pair_ref_atom_id_nn : nearest_neighbors) { // nearest neighbors for each center atom -> UC
 
 		for (const auto &[nn_id, _]: pair_ref_atom_id_nn) {
 			local_UC_atoms.emplace_back(atoms.at(nn_id));
 		} 
 
 		helper::LocalUC local_UC { helper::LocalUC(local_UC_atoms) };
-		for (Position &atom : local_UC.m_atoms) {
-			atom -= local_UC.m_COM;
+		for (Atom &atom : local_UC.m_Sr_atoms) {
+			atom.m_position -= local_UC.m_COM;
 		}
 
 		double alpha { helper::gradientDescent(step_size, tetragonal_UC, local_UC) };
@@ -454,8 +546,8 @@ inline void getPolarization(const double step_size, const Positions &atoms, cons
 
 		Position rotatedPoint;
 		for (size_t i : std::ranges::views::iota(8)) {
-			rotatedPoint = helper::rotatePoint(alpha, tetragonal_UC.m_atoms.at(i));
-			displacements.push_back(local_UC.m_atoms.at(i) - rotatedPoint);
+			rotatedPoint = helper::rotatePoint(alpha, tetragonal_UC.m_Sr_atoms.at(i).m_position);
+			displacements.push_back(local_UC.m_Sr_atoms.at(i).m_position - rotatedPoint);
 		}
 
 		// calculate BEC

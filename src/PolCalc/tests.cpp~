@@ -1,0 +1,148 @@
+// main.cpp  (fractional-coordinates-only test harness)
+#include <print>
+#include <string>
+#include <vector>
+#include <optional>
+#include <cstdlib>
+#include <algorithm>
+
+#include "polcalc.hpp"  // your header
+
+using namespace PolCalc;
+
+static std::string tstr(AtomType t) {
+    switch (t) { case AtomType::Sr: return "Sr"; case AtomType::Ti: return "Ti";
+                 case AtomType::O:  return "O";  default: return "Unknown"; }
+}
+
+struct CLI {
+    std::string poscar;
+    size_t N_Sr{}, N_Ti{}, N_O{};
+    size_t n{8};
+    unsigned head{0};
+    long tail{-1};
+    std::string pool{"sr"};     // sr|ti|o
+    std::string centers{"ti"};  // sr|ti|o
+    bool sort{true};
+    size_t limit{10};
+};
+
+static void usage() {
+    std::println("Usage:");
+    std::println("  test_nn_frac POSCAR N_Sr N_Ti N_O n "
+                 "[--pool sr|ti|o] [--centers sr|ti|o] [--head H] [--tail T] "
+                 "[--no-sort] [--limit K]");
+    std::println("Notes: distances are in FRACTIONAL space (minimum image), no cell matrix.");
+}
+
+static std::optional<CLI> parse(int argc, char** argv) {
+    if (argc < 6) { usage(); return std::nullopt; }
+    CLI c;
+    try {
+        c.poscar = argv[1];
+        c.N_Sr = std::stoull(argv[2]);
+        c.N_Ti = std::stoull(argv[3]);
+        c.N_O  = std::stoull(argv[4]);
+        c.n    = std::stoull(argv[5]);
+    } catch (...) {
+        std::println(stderr, "Failed to parse required args."); usage(); return std::nullopt;
+    }
+    for (int i = 6; i < argc; ++i) {
+        std::string a = argv[i];
+        auto need = [&](int& i){ if (i+1>=argc) throw std::runtime_error("Missing value for "+a); return std::string(argv[++i]); };
+        try {
+            if (a=="--pool")     c.pool    = need(i);
+            else if (a=="--centers") c.centers = need(i);
+            else if (a=="--head")    c.head    = static_cast<unsigned>(std::stoul(need(i)));
+            else if (a=="--tail")    c.tail    = static_cast<long>(std::stol(need(i)));
+            else if (a=="--no-sort") c.sort    = false;
+            else if (a=="--limit")   c.limit   = std::stoull(need(i));
+            else { std::println(stderr, "Warning: unknown flag '{}'", a); }
+        } catch (const std::exception& e) {
+            std::println(stderr, "Error parsing {}: {}", a, e.what()); return std::nullopt;
+        }
+    }
+    return c;
+}
+
+static Atoms slice(const Positions& P, size_t start, size_t count, AtomType t) {
+    Atoms a; a.reserve(count);
+    for (size_t i=0;i<count;++i) a.emplace_back(t, P.at(start+i));
+    return a;
+}
+static const Atoms* pick(const std::string& s, const Atoms& sr, const Atoms& ti, const Atoms& o) {
+    std::string k=s; std::ranges::transform(k,k.begin(),[](unsigned char c){return std::tolower(c);});
+    if (k=="sr") return &sr; if (k=="ti") return &ti; if (k=="o") return &o;
+    throw std::runtime_error("Invalid atom type '"+s+"' (choose sr|ti|o)");
+}
+
+int main(int argc, char** argv) {
+    auto cliOpt = parse(argc, argv);
+    if (!cliOpt) return 1;
+    const auto cli = *cliOpt;
+
+    try {
+        // 1) load POSCAR positions (assumed fractional)
+        Positions pos = loadPosFromFile(cli.poscar, cli.head, cli.tail, "POSCAR");
+        const size_t expected = cli.N_Sr + cli.N_Ti + cli.N_O;
+        if (pos.size() != expected) {
+            std::println(stderr,
+                "Error: read {} positions but N_Sr+N_Ti+N_O = {}. Check counts or --head/--tail.",
+                pos.size(), expected);
+            return 2;
+        }
+
+        // 2) build typed arrays (avoid current checks in sortPositionsByType)
+        Atoms Sr = slice(pos, 0,                cli.N_Sr, AtomType::Sr);
+        Atoms Ti = slice(pos, cli.N_Sr,         cli.N_Ti, AtomType::Ti);
+        Atoms O  = slice(pos, cli.N_Sr+cli.N_Ti,cli.N_O,  AtomType::O);
+
+        const Atoms* pool    = pick(cli.pool,    Sr, Ti, O);
+        const Atoms* centers = pick(cli.centers, Sr, Ti, O);
+
+        // 3) sanity for requested n (fractional-only, but cardinalities still matter)
+        if (cli.n == 0) {
+            std::println(stderr, "Error: n must be > 0."); return 3;
+        }
+        const bool self_pool = (pool == centers);
+        const size_t max_allowed = self_pool ? (pool->size() ? pool->size()-1 : 0) : pool->size();
+        if (cli.n > max_allowed) {
+            std::println(stderr,
+                "Error: requested n={} exceeds pool capacity{} ({}).",
+                cli.n, self_pool ? " (self-pool excludes the center)" : "", max_allowed);
+            return 4;
+        }
+
+        // 4) compute NNs in FRACTIONAL space (pass no cell_matrix)
+        auto nnExp = getNearestNeighbors(*pool, *centers, cli.n, std::nullopt, cli.sort);
+        if (!nnExp) {
+            std::println(stderr, "getNearestNeighbors failed: {}", nnExp.error());
+            return 5;
+        }
+        const auto& nn = *nnExp;
+
+        // 5) print a short report
+        std::println("NN in FRACTIONAL space (minimum image), sort={}, centers={}, pool={}",
+                     cli.sort ? "true":"false", cli.centers, cli.pool);
+
+        const size_t show = std::min(cli.limit, nn.size());
+        for (size_t i = 0; i < show; ++i) {
+            std::println("Center {:>6} (type {}):", i, tstr(centers->at(i).m_atom_type));
+            const auto& lst = nn[i];
+            for (size_t j = 0; j < lst.size(); ++j) {
+                const auto [idx, d2] = lst[j];
+                // d2 is ||Δs||^2 in fractional coordinates; sqrt(d2) is ||Δs||_frac
+                std::println("  #{:<2} pool[{:>6}] {:>7}  ||Δs||_frac^2={:.10f}  ||Δs||_frac≈{:.10f}",
+                             j, idx, tstr(pool->at(idx).m_atom_type), d2, std::sqrt(d2));
+            }
+        }
+        if (nn.size() > show) {
+            std::println("... ({} more centers; use --limit to see more)", nn.size() - show);
+        }
+        return 0;
+
+    } catch (const std::exception& e) {
+        std::println(stderr, "Fatal: {}", e.what());
+        return 10;
+    }
+}
