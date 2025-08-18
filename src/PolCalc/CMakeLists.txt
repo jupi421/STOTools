@@ -24,5 +24,5 @@ add_library(polcalc_lib INTERFACE)
 target_include_directories(polcalc_lib INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(polcalc_lib INTERFACE Eigen3::Eigen)
 
-add_executable(test nn_test.cpp)
+add_executable(test tests2.cpp)
 target_link_libraries(test PRIVATE polcalc_lib)

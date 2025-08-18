@@ -1,5 +1,6 @@
 #pragma once
 
+#include <iostream>
 #include <fstream>
 #include <stdexcept>
 #include <expected>
@@ -25,7 +26,7 @@ using Vectors = std::vector<Vector>;
 using NNIds = std::vector<std::pair<size_t, double>>; 
 
 enum class DWType {
-	HT, HH
+	HT, HH, APB
 };
 
 enum class AtomType {
@@ -36,7 +37,7 @@ struct Atom {
 	AtomType m_atom_type { AtomType::Unknown };
 	Position m_position { Position::Zero() };
 
-	Atom() {};
+	Atom() = default;
 	Atom(AtomType atom_type, const Position& position) 
 		: m_atom_type(atom_type), m_position(position)
 	{}
@@ -50,7 +51,7 @@ struct AtomPositions {
 	Atoms m_Ti {};
 	Atoms m_O {};
 
-	AtomPositions() {};
+	AtomPositions() = default;
 	AtomPositions(const size_t N_Sr, const size_t N_Ti, const size_t N_O) {
 		m_Sr.reserve(N_Sr);
 		m_Ti.reserve(N_Ti);
@@ -58,12 +59,6 @@ struct AtomPositions {
 	}
 };
 
-struct NearestNeighborsByType {
-
-	std::vector<NNIds> m_sr_nn_ids;
-	std::vector<NNIds> m_ti_nn_ids;
-	std::vector<NNIds> m_o_nn_ids;
-};
 
 std::expected<std::vector<NNIds>, std::string> getNearestNeighbors(const Atoms& atoms, 
 																   const Atoms& reference_atoms,
@@ -73,40 +68,47 @@ std::expected<std::vector<NNIds>, std::string> getNearestNeighbors(const Atoms& 
 
 namespace helper {
 
+inline Eigen::Vector3d convertCoordinates(const Position &pos, const Eigen::Matrix3d &cell_matrix);
+
 static inline Position getCOM(const Atoms &atom);
 
-struct UnitCell {
+	class UnitCell {
 	// tetragonal unit cell with COM at origin
-	Atoms m_Sr_atoms { };
-	Atoms m_Ti_atoms { };
-	Atoms m_O_atoms { };
-	Position m_COM { Position::Zero() };
+public:
+	// A and O contain pairs of opposite atoms (wrt y axis)
+	std::vector<std::pair<Atom, Atom>> m_A_cart_nopbc { };
+	Atom m_B_cart_nopbc { };
+	std::vector<std::pair<Atom, Atom>> m_O_cart_nopbc { };
+	Position m_COM_cart_nopbc { Position::Zero() };
 
 	UnitCell() {};
-	// apply cell matrix so that everything stays in direct coordinates
-	UnitCell(Eigen::Matrix3d& cell_matrix) {
-		m_Sr_atoms.reserve(8);
+
+	UnitCell(AtomType type_A, AtomType type_B, AtomType type_O, short O_rot_sign) {
+		m_A_cart_nopbc.reserve(8);
 
 		constexpr double a { 3.905 };
-		constexpr double c { 1.12 * a };
+		constexpr double c { a }; 
 
 		Eigen::Vector3d ex = Eigen::Vector3d(1, 0, 0);
 		Eigen::Vector3d ey = Eigen::Vector3d(0, 1, 0);
 		Eigen::Vector3d ez = Eigen::Vector3d(0, 0, 1);
 
-		m_Sr_atoms.emplace_back(AtomType::Sr, -0.5*a*ex + 0.5*a*ey - 0.5*c*ez );
-		m_Sr_atoms.emplace_back(AtomType::Sr, 0.5*a*ex + 0.5*a*ey - 0.5*c*ez );
-		m_Sr_atoms.emplace_back(AtomType::Sr, 0.5*a*ex + 0.5*a*ey + 0.5*c*ez );
-		m_Sr_atoms.emplace_back(AtomType::Sr, -0.5*a*ex + 0.5*a*ey + 0.5*c*ez );
-		m_Sr_atoms.emplace_back(AtomType::Sr, -0.5*a*ex - 0.5*a*ey - 0.5*c*ez );
-		m_Sr_atoms.emplace_back(AtomType::Sr, 0.5*a*ex - 0.5*a*ey - 0.5*c*ez );
-		m_Sr_atoms.emplace_back(AtomType::Sr, 0.5*a*ex - 0.5*a*ey + 0.5*c*ez );
-		m_Sr_atoms.emplace_back(AtomType::Sr, -0.5*a*ex - 0.5*a*ey + 0.5*c*ez );
+		auto fill_pristine = [&](AtomType type, Position&& pos){
+			Atom first { type, pos };
+			pos[1] *= -1;
+			Atom second { type, pos}; // mirroring first at xz plane
+			m_A_cart_nopbc.emplace_back(std::move(first), std::move(second));
+		};
+
+		fill_pristine(type_A, - 0.5*a*ex + 0.5*a*ey - 0.5*c*ez);
+		fill_pristine(type_A, 0.5*a*ex + 0.5*a*ey - 0.5*c*ez);
+		fill_pristine(type_A, 0.5*a*ex + 0.5*a*ey + 0.5*c*ez);
+		fill_pristine(type_A, -0.5*a*ex + 0.5*a*ey + 0.5*c*ez);
 	}
 
 	struct Displacements {
-		Vectors m_Sr_displacements { };
-		Vectors m_Ti_displacements { };
+		Vectors m_A_displacements { };
+		Vectors m_B_displacements { };
 		Vectors m_O_displacements { };
 	};
 
@@ -114,29 +116,67 @@ struct UnitCell {
 	void rotateUC();
 };
 
-struct LocalUC : UnitCell {
+class LocalUC : UnitCell {
 
+public:
 	enum class DWSide {
-		left, right, Unknown
+		left, right, center, Unknown
 	};
 
-	double m_tilt { };
+	std::vector<std::pair<Atom, Atom>> m_A_direct_pbc { };
+	Atom m_B_direct_pbc { };
+	std::vector<std::pair<Atom, Atom>> m_O_direct_pbc { };
+	std::optional<double> m_angle { };
 	DWSide side { DWSide::Unknown };
 
-	private:
+private:
+	static inline std::optional<double> m_right_init_angle;
+	static inline std::optional<double> m_left_init_angle;
+	Eigen::Matrix3d m_metric;
+
+	struct OPairs {
+		int m_first_id { };
+		int m_second_id { };
+		double m_cos { };
+		
+		OPairs(int first_id, int second_id, double sq_norm)
+			: m_first_id(first_id), m_second_id(second_id), m_cos(sq_norm)
+		{}
+	};
 
 	static Position minimumImage(const Position& pos) {
 		return pos.array() - pos.array().round();
 	}
 
-	static Position directCoordinates(const Position& pos, const Position& ref) {
+	static double wrapDirectCoordinates(double x) {
+		return x - floor(x);
+	}
+
+	static Position wrapDirectCoordinates(const Position& pos) {
 		Position temp { pos };
-		temp += ref;
-		for (size_t i : std::ranges::views::iota(3)) {
-			temp[i] -= floor(temp[i]);
+		for (size_t i { 0 }; i < 3; i++) {
+			temp[i] = wrapDirectCoordinates(temp[i]);
 		}
 		return temp;
 	}
+	
+	static void wrapDirectCoordinates(std::vector<std::pair<Atom, double>>& atoms, Position&& ref) {
+		for (auto& pair : atoms) {
+			pair.first.m_position = wrapDirectCoordinates(pair.first.m_position + ref);
+		}
+	}
+
+	static void wrapDirectCoordinates(std::vector<std::pair<Atom, Atom>>& atoms, const Position& ref) {
+		for (auto& pair : atoms) {
+			pair.first.m_position = wrapDirectCoordinates(pair.first.m_position + ref);
+			pair.second.m_position = wrapDirectCoordinates(pair.second.m_position + ref);
+		}
+	}
+
+	Position get_cart_pos_nowrap(const Atom& atom, const Atom& ref, const Eigen::Matrix3d& cell_matrix) {
+		Position pos_unwrapped { ref.m_position + minimumImage( atom.m_position - ref.m_position ) };
+		return convertCoordinates(pos_unwrapped, cell_matrix);
+	};
 
 	static double getAngle(const Position& atom) {
 		double angle { std::atan2(atom[2], atom[0]) };
@@ -146,62 +186,114 @@ struct LocalUC : UnitCell {
 		return angle;
 	}
 
-	Vector getOrientation(DWType) const;
+	void setDomain(const Position& ref, double DW_center_x, double tolerance) {
+		double distance_from_DW = wrapDirectCoordinates(ref)[0] - DW_center_x;
+		distance_from_DW -= round(distance_from_DW);
 
-	public:
-
-	LocalUC() {};
-	explicit LocalUC(const Atoms& corners, const Atom& center, DWType DW_type, double DW_center_x = 0.5, double tolerance = 1e-3) { // explicit to prevent implicit type conversions
-		
-		if (corners.size() != 8) {
-			throw std::runtime_error("LocalUC, Expected corners: 8, recieved: " + std::to_string(corners.size()));
+		if (ref.x() < DW_center_x+tolerance && ref.x() > DW_center_x-tolerance) {
+			side = DWSide::center;
 		}
-
-		m_Sr_atoms.reserve(8);
-		
-		Atoms corners_local { [&corners, &center](){
-			Atoms temp { corners };
-			for (Atom& atom : temp){
-				atom.m_position = minimumImage(atom.m_position - center.m_position);
-			}
-			return temp;
-		}()};
-
-		Position COM_local = helper::getCOM(corners_local);
-		m_COM = directCoordinates(COM_local, center.m_position);
-
-		if (m_COM[0] < DW_center_x) {
-			side = DWSide::left;
-		}
-		else if (m_COM[0] - DW_center_x < tolerance) { // consider thermal fluctuations
-			side = DWSide::left;
-		}
-		else {
+		else if (ref.x() > DW_center_x) {
 			side = DWSide::right;
 		}
+		else {
+			side = DWSide::left;
+		}
+	}
+	
+	void rebalancePlanes(std::vector<std::pair<Atom, double>>& atoms_upper, std::vector<std::pair<Atom, double>>& atoms_lower, size_t recursion_depth=0) {
+		if (recursion_depth > 8) {
+			return;
+		}
+		else if (atoms_upper.size() == 4 && atoms_lower.size() == 4) {
+			return;
+		}
+
+		if ((atoms_upper.size() + atoms_lower.size() != 8)) {
+			throw std::runtime_error("LocalUC::LocalUC incorrect number of atoms");
+		}
+		else if (atoms_upper.size() > 4 && atoms_lower.size() < 4) {
+			auto lowest_upper { std::ranges::min_element(atoms_upper, [](const auto& lhs, const auto& rhs){
+				return lhs.first.m_position[1] < rhs.first.m_position[1];
+			}) };
+			atoms_lower.push_back(*lowest_upper);
+			atoms_upper.erase(lowest_upper);
+		}
+		else if (atoms_upper.size() < 4 && atoms_lower.size() > 4) {
+			auto highest_lower { std::ranges::max_element(atoms_lower, [](const auto& lhs, const auto& rhs){
+				return lhs.first.m_position[1] < rhs.first.m_position[1];
+			}) };
+			atoms_upper.push_back(*highest_lower);
+			atoms_lower.erase(highest_lower);
+		}
+		 
+		return rebalancePlanes(atoms_upper, atoms_lower, ++recursion_depth);
+	}
+
+	std::vector<std::pair<Atom, Atom>> findOppositeO(const Atoms& atoms, double cos_tolerance = 0.1) {
+		std::vector<std::pair<Atom, Atom>> matches;
+		size_t matches_size { atoms.size() / 2 };
+		matches.reserve(matches_size);
+		for (size_t i { 0 }; i < atoms.size(); i++) {
+			for (size_t j { 0 }; j < i; j++) {
+				Position pos1 { atoms[i].m_position };
+				Position pos2 { atoms[j].m_position };
+				
+				double cos { pos1.dot(m_metric*pos2) / sqrt(pos1.dot(m_metric*pos1) * pos2.dot(m_metric*pos2)) };
+				if (1+cos < cos_tolerance) {
+					matches.emplace_back(atoms[i], atoms[j]);
+				}
+			}
+		}
+		if (matches.size() != matches_size) {
+			throw std::runtime_error("Matches are " + std::to_string(matches.size()) + " but should be " + std::to_string(matches_size));
+		}
+		return matches;
+	}
+
+public:
+	Vector getOrientation(DWType) const;
+
+	explicit LocalUC(const Atoms& A, const Atom& B, const Atoms& O, DWType DW_type, const Eigen::Matrix3d& cell_matrix, double DW_center_x = 0.5, double tolerance = 1e-3) 
+		: m_B_direct_pbc(B), m_metric(cell_matrix.transpose() * cell_matrix)
+	{
+		if (A.size() != 8) {
+			throw std::runtime_error("LocalUC, Expected corners: 8, recieved: " + std::to_string(A.size()));
+		}
+		else if (O.size() != 6) {
+			throw std::runtime_error("LocalUC, Expected O: 6, recieved: " + std::to_string(O.size()));
+		}
+		
+		Atoms A_rel_to_B { 
+			[&A, &B](){
+				Atoms temp { A };
+				for (Atom& atom : temp){
+					atom.m_position = minimumImage(atom.m_position - B.m_position);
+				}
+				return temp;
+			}()
+		};
+
+		Position COM_rel_to_B = helper::getCOM(A_rel_to_B);
+
+		setDomain(B.m_position + COM_rel_to_B, DW_center_x, tolerance);
 
 		std::vector<std::pair<Atom, double>> atoms_upper, atoms_lower;
 		atoms_upper.reserve(4);
 		atoms_lower.reserve(4);
 
-		for (const Atom& corner : corners_local) {
-			double angle { getAngle(corner.m_position - COM_local) };
-			(corner.m_position[1] < COM_local[1] ? atoms_lower : atoms_upper).emplace_back(corner, angle);
+		// get angles and split corners into upper and lower
+		for (const Atom& corner : A_rel_to_B) {
+			Atom corner_rel_to_COM { corner.m_atom_type, minimumImage(corner.m_position - COM_rel_to_B) };
+			double angle { getAngle(cell_matrix*corner_rel_to_COM.m_position) };
+			(corner_rel_to_COM.m_position[1] < 0 ? atoms_lower : atoms_upper).emplace_back(corner_rel_to_COM, angle);
 		}
 
-		if (atoms_upper.size() != 4) {
-			throw std::runtime_error("LocalUC, atoms_upper requires 4 elements, got " + std::to_string(atoms_upper.size()));
-		}
-		else if (atoms_lower.size() != 4) {
-			throw std::runtime_error("LocalUC, atoms_lower requires 4 elements, got " + std::to_string(atoms_upper.size()));
-		}
+		rebalancePlanes(atoms_upper, atoms_lower);
 
-		for (auto& pair : atoms_upper) {
-			pair.first.m_position = directCoordinates(pair.first.m_position, center.m_position);
-		}
-		for (auto& pair : atoms_lower) {
-			pair.first.m_position = directCoordinates(pair.first.m_position, center.m_position);
-		}
+		// wrap from direct atoms COM centered back to direct coordinates with pbc
+		wrapDirectCoordinates(atoms_upper, B.m_position + COM_rel_to_B);
+		wrapDirectCoordinates(atoms_lower, B.m_position + COM_rel_to_B);
 
 		auto sort_angles = [](auto& arr) { 
 			std::ranges::sort(arr, [](auto& pair1, auto& pair2) { 
@@ -211,33 +303,170 @@ struct LocalUC : UnitCell {
 		sort_angles(atoms_upper);
 		sort_angles(atoms_lower);
 
-		if (side == DWSide::left) {
-			m_Sr_atoms.push_back(atoms_upper.at(2).first);
-			m_Sr_atoms.push_back(atoms_upper.at(3).first);
-			m_Sr_atoms.push_back(atoms_upper.at(0).first);
-			m_Sr_atoms.push_back(atoms_upper.at(1).first);
-			m_Sr_atoms.push_back(atoms_lower.at(2).first);
-			m_Sr_atoms.push_back(atoms_lower.at(3).first);
-			m_Sr_atoms.push_back(atoms_lower.at(0).first);
-			m_Sr_atoms.push_back(atoms_lower.at(1).first);
+		// fill A and O arrays
+		auto fill_direct_A = [&](auto&& upper, auto&& lower){
+			for (size_t i { 0 }; i < upper.size(); i++) {
+				Atom first { std::move(upper[i].first)};
+				Atom second { std::move(lower[i].first)};
+				m_A_direct_pbc.emplace_back(std::move(first), std::move(second));
+			}
+		};
+
+		m_A_direct_pbc.reserve(4);
+		fill_direct_A(atoms_upper, atoms_lower);
+		
+		// sort O top, bottom, ....
+		Atoms O_B_centered { 
+			[&](){
+				Atoms temp { O };
+				for (Atom& atom : temp){
+					atom.m_position = minimumImage(atom.m_position - B.m_position);
+				}
+				return temp; 
+			}()
+		};
+
+		std::vector<std::pair<Atom, Atom>> O_B_centered_pairs { findOppositeO(O_B_centered) };
+		// wrap O back to direct with pbc
+		wrapDirectCoordinates(O_B_centered_pairs, B.m_position);
+		m_O_direct_pbc = O_B_centered_pairs;
+		
+		// get cartesian coordinates without pbc
+		m_A_cart_nopbc.reserve(4);
+		m_O_cart_nopbc.reserve(3);
+
+		auto fill_cart = [&](const auto& direct, auto& cart) {
+			for (const auto& pair : direct) {
+				Atom first { pair.first.m_atom_type, get_cart_pos_nowrap(pair.first, B, cell_matrix) };
+				Atom second { pair.second.m_atom_type, get_cart_pos_nowrap(pair.second, B, cell_matrix) };
+				cart.emplace_back(std::move(first), std::move(second));
+			}; };
+
+		// save in cartesian without pbc
+		fill_cart(m_A_direct_pbc, m_A_cart_nopbc);
+		fill_cart(m_O_direct_pbc, m_O_cart_nopbc);
+		m_B_cart_nopbc = Atom(m_B_direct_pbc.m_atom_type, get_cart_pos_nowrap(B, B, cell_matrix));
+		m_COM_cart_nopbc = convertCoordinates(B.m_position + COM_rel_to_B, cell_matrix);
+	}
+
+	std::expected<double, std::string> get_init_angle() {
+		if (!m_left_init_angle || !m_right_init_angle) {
+			return std::unexpected("Angle not initialized!");
 		}
 		else if (side == DWSide::right) {
-			m_Sr_atoms.push_back(atoms_upper.at(3).first);
-			m_Sr_atoms.push_back(atoms_upper.at(0).first);
-			m_Sr_atoms.push_back(atoms_upper.at(1).first);
-			m_Sr_atoms.push_back(atoms_upper.at(2).first);
-			m_Sr_atoms.push_back(atoms_lower.at(3).first);
-			m_Sr_atoms.push_back(atoms_lower.at(0).first);
-			m_Sr_atoms.push_back(atoms_lower.at(1).first);
-			m_Sr_atoms.push_back(atoms_lower.at(2).first);
+			return m_right_init_angle.value();
+		}
+		else if (side == DWSide::left) {
+			return m_left_init_angle.value();
+		}
+		else {
+			return m_left_init_angle.value();
 		}
 	}
+
+	//explicit LocalUC(const Atoms& A, const Atom& B, const Atoms& O, DWType DW_type, const Eigen::Matrix3d& cell_matrix, double DW_center_x = 0.5, double tolerance = 1e-3) {
+	//	if (A.size() != 8) {
+	//		throw std::runtime_error("LocalUC, Expected corners: 8, recieved: " + std::to_string(A.size()));
+	//	}
+	//	else if (O.size() != 6) {
+	//		throw std::runtime_error("LocalUC, Expected O: 6, recieved: " + std::to_string(O.size()));
+	//	}
+	//	
+	//	Atoms corners_rel_to_B { [&A, &B](){
+	//		Atoms temp { A };
+	//		for (Atom& atom : temp){
+	//			atom.m_position = minimumImage(atom.m_position - B.m_position);
+	//		}
+	//		return temp;
+	//	}()};
+
+	//	Position COM_rel_to_B = helper::getCOM(corners_rel_to_B);
+
+	//	setDomain(wrapDirectCoordinates(B.m_position + COM_rel_to_B), DW_center_x, tolerance);
+
+	//	std::vector<std::pair<Atom, double>> atoms_upper, atoms_lower;
+	//	atoms_upper.reserve(4);
+	//	atoms_lower.reserve(4);
+
+	//	for (const Atom& corner : corners_rel_to_B) {
+	//		double angle { getAngle(minimumImage(corner.m_position - COM_rel_to_B)) };
+	//		(corner.m_position[1] < COM_rel_to_B[1] ? atoms_lower : atoms_upper).emplace_back(corner, angle);
+	//	}
+
+	//	if (atoms_upper.size() != 4) {
+	//		throw std::runtime_error("LocalUC, atoms_upper requires 4 elements, got " + std::to_string(atoms_upper.size()));
+	//	}
+	//	else if (atoms_lower.size() != 4) {
+	//		throw std::runtime_error("LocalUC, atoms_lower requires 4 elements, got " + std::to_string(atoms_upper.size()));
+	//	}
+
+	//	for (auto& pair : atoms_upper) {
+	//		pair.first.m_position = wrapDirectCoordinates(pair.first.m_position + B.m_position);
+	//	}
+	//	for (auto& pair : atoms_lower) {
+	//		pair.first.m_position = wrapDirectCoordinates(pair.first.m_position + B.m_position);
+	//	}
+
+	//	auto sort_angles = [](auto& arr) { 
+	//		std::ranges::sort(arr, [](auto& pair1, auto& pair2) { 
+	//			return pair1.second < pair2.second;
+	//		});};
+
+	//	sort_angles(atoms_upper);
+	//	sort_angles(atoms_lower);
+
+	//	if (side == DWSide::left) {
+	//		m_A_direct_pbc.push_back(atoms_upper.at(2).first);
+	//		m_A_direct_pbc.push_back(atoms_upper.at(3).first);
+	//		m_A_direct_pbc.push_back(atoms_upper.at(0).first);
+	//		m_A_direct_pbc.push_back(atoms_upper.at(1).first);
+	//		m_A_direct_pbc.push_back(atoms_lower.at(2).first);
+	//		m_A_direct_pbc.push_back(atoms_lower.at(3).first);
+	//		m_A_direct_pbc.push_back(atoms_lower.at(0).first);
+	//		m_A_direct_pbc.push_back(atoms_lower.at(1).first);
+	//	}
+	//	else if (side == DWSide::right) {
+	//		m_A_direct_pbc.push_back(atoms_upper.at(3).first);
+	//		m_A_direct_pbc.push_back(atoms_upper.at(0).first);
+	//		m_A_direct_pbc.push_back(atoms_upper.at(1).first);
+	//		m_A_direct_pbc.push_back(atoms_upper.at(2).first);
+	//		m_A_direct_pbc.push_back(atoms_lower.at(3).first);
+	//		m_A_direct_pbc.push_back(atoms_lower.at(0).first);
+	//		m_A_direct_pbc.push_back(atoms_lower.at(1).first);
+	//		m_A_direct_pbc.push_back(atoms_lower.at(2).first);
+	//	}
+	//	
+	//	auto get_cart_pos_nowrap = [&](const Atom& atom) {
+	//		Position pos_unwrapped { B.m_position + minimumImage( atom.m_position - B.m_position ) };
+	//		return convertCoordinates(pos_unwrapped, cell_matrix);
+	//	};
+	//	
+	//	m_A_cart_nopbc.reserve(8);
+	//	m_O_cart_nopbc.reserve(6);
+	//	for (const Atom& atom : m_A_direct_pbc) {
+	//		m_A_cart_nopbc.emplace_back(atom.m_atom_type, get_cart_pos_nowrap(atom));
+	//	}
+	//	for (const Atom& atom : m_O_direct_pbc) {
+	//		m_O_cart_nopbc.emplace_back(atom.m_atom_type, get_cart_pos_nowrap(atom));
+	//	}
+	//	m_B_cart_nopbc = Atom(m_B_direct_pbc.m_atom_type, get_cart_pos_nowrap(B));
+
+	//	m_COM_cart_nopbc = convertCoordinates(B.m_position + COM_rel_to_B, cell_matrix);
+	//}
 
 	void transformToMinimumImage();
 	void transformToDirect();
 	void rotateUC() = delete;
 
 };
+
+inline double getSqDistance(const Vector& r, const std::optional<Eigen::Matrix3d>& cell_matrix = std::nullopt) {
+	if (!cell_matrix) {
+		return r.squaredNorm();
+	}
+	Eigen::Matrix3d metric { cell_matrix.value().transpose() * cell_matrix.value() };
+	return r.dot(metric*r);
+}
 
 inline Position getCOM(const Atoms &atoms) {
 	Vector COM = Vector::Zero();
@@ -249,29 +478,18 @@ inline Position getCOM(const Atoms &atoms) {
 	return COM/atoms.size();
 }
 
-inline Eigen::Vector3d convertCoordinates(Position &vector, const Eigen::Matrix3d &cell_matrix) {
-	return cell_matrix*vector;
+inline Eigen::Vector3d convertCoordinates(const Position &pos, const Eigen::Matrix3d &cell_matrix) {
+	return cell_matrix*pos;
 }
 
-inline double getDistance(const Atom& atom1, 
+inline double getMinimumImageSqDistance(const Atom& atom1, 
 						  const Atom& atom2, 
-						  const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt, 
-						  const bool norm = false) {
+						  const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt) {
 
 	Vector dr { atom2.m_position - atom1.m_position };
 	dr.array() -= dr.array().round();
 
-	Position minimum_image_distance { dr };
-
-	if (cell_matrix) {
-		minimum_image_distance = helper::convertCoordinates(minimum_image_distance, cell_matrix.value());
-	}
-
-	if (norm) {
-		return minimum_image_distance.norm(); 
-	}
-
-	return minimum_image_distance.squaredNorm();
+	return getSqDistance(dr, cell_matrix);
 }
 
 inline std::expected<NNIds, std::string> findNearestN(const Atom& reference_atom, 
@@ -304,7 +522,7 @@ inline std::expected<NNIds, std::string> findNearestN(const Atom& reference_atom
 			continue;
 		}
 
-		nearest_neighbors.emplace_back(idx++, getDistance(reference_atom, other_atom, cell_matrix));
+		nearest_neighbors.emplace_back(idx++, getMinimumImageSqDistance(reference_atom, other_atom, cell_matrix));
 	}
 	
 	std::ranges::nth_element(nearest_neighbors, nearest_neighbors.begin() + n, [](const auto &pair1, const auto &pair2){
@@ -347,30 +565,30 @@ inline double getGradMSD(const double alpha, const Atoms &pristine_UC, const Ato
 	double grad { };
 
 	//make sure to calculate distance between correct atoms
-	for (size_t i : std::ranges::views::iota(pristine_UC.size())) {
+	for (size_t i { 0 }; i < pristine_UC.size(); i++) {
 		grad += (local_UC.at(i).m_position - rotatePoint(alpha, pristine_UC.at(i).m_position)).transpose()*(dR*pristine_UC.at(i).m_position);
 	}
 
 	return 2*grad;
 }
 
-inline double gradientDescent(double step_size, const UnitCell &pristine_UC, const LocalUC &local_UC) {
-	double alpha { local_UC.m_tilt };
-	constexpr double threshold { 1e-12 };
-	constexpr uint max_iter { 1000 };
-
-	for (size_t i : std::ranges::views::iota(max_iter)) {
-		double prev_alpha { alpha };
-		alpha -= step_size * getGradMSD(alpha, pristine_UC.m_Sr_atoms, local_UC.m_Sr_atoms);
-
-		double diff_alpha { std::abs(prev_alpha - alpha) };
-		if (diff_alpha <= threshold) { 
-			return alpha;
-		}
-	}
-
-	return alpha;
-}
+//inline double gradientDescent(double step_size, const UnitCell &pristine_UC, const LocalUC &local_UC) {
+//	double alpha { local_UC.m_angle };
+//	constexpr double threshold { 1e-12 };
+//	constexpr uint max_iter { 1000 };
+//
+//	for (size_t i : std::ranges::views::iota(max_iter)) {
+//		double prev_alpha { alpha };
+//		alpha -= step_size * getGradMSD(alpha, pristine_UC.m_A_cart_nopbc, local_UC.m_A_cart_nopbc);
+//
+//		double diff_alpha { std::abs(prev_alpha - alpha) };
+//		if (diff_alpha <= threshold) { 
+//			return alpha;
+//		}
+//	}
+//
+//	return alpha;
+//}
 }
 
 
@@ -517,40 +735,40 @@ inline std::expected<std::vector<NNIds>, std::string> getNearestNeighbors(const 
 	return nearest_neighbors;
 }
 
-inline void getPolarization(const double step_size, const Atoms &atoms, const std::vector<NNIds> &nearest_neighbors) {
-	// atoms should be same element as nearest_neighbors
-	const helper::UnitCell tetragonal_UC { };
-
-	Atoms local_UC_atoms;
-	local_UC_atoms.reserve(8);
-
-	if (atoms.size() != nearest_neighbors.size()) {
-		throw std::runtime_error("Mismatch in size of atoms and nearest_neighbors!");
-	}
-
-	for (const NNIds &pair_ref_atom_id_nn : nearest_neighbors) { // nearest neighbors for each center atom -> UC
-
-		for (const auto &[nn_id, _]: pair_ref_atom_id_nn) {
-			local_UC_atoms.emplace_back(atoms.at(nn_id));
-		} 
-
-		helper::LocalUC local_UC { helper::LocalUC(local_UC_atoms) };
-		for (Atom &atom : local_UC.m_Sr_atoms) {
-			atom.m_position -= local_UC.m_COM;
-		}
-
-		double alpha { helper::gradientDescent(step_size, tetragonal_UC, local_UC) };
-
-		Vectors displacements;
-		displacements.reserve(8);
-
-		Position rotatedPoint;
-		for (size_t i : std::ranges::views::iota(8)) {
-			rotatedPoint = helper::rotatePoint(alpha, tetragonal_UC.m_Sr_atoms.at(i).m_position);
-			displacements.push_back(local_UC.m_Sr_atoms.at(i).m_position - rotatedPoint);
-		}
-
-		// calculate BEC
-	}
-}
+//inline void getPolarization(const double step_size, const Atoms &atoms, const std::vector<NNIds> &nearest_neighbors) {
+//	// atoms should be same element as nearest_neighbors
+//	const helper::UnitCell tetragonal_UC { };
+//
+//	Atoms local_UC_atoms;
+//	local_UC_atoms.reserve(8);
+//
+//	if (atoms.size() != nearest_neighbors.size()) {
+//		throw std::runtime_error("Mismatch in size of atoms and nearest_neighbors!");
+//	}
+//
+//	for (const NNIds &pair_ref_atom_id_nn : nearest_neighbors) { // nearest neighbors for each center atom -> UC
+//
+//		for (const auto &[nn_id, _]: pair_ref_atom_id_nn) {
+//			local_UC_atoms.emplace_back(atoms.at(nn_id));
+//		} 
+//
+//		helper::LocalUC local_UC { helper::LocalUC(local_UC_atoms) };
+//		for (Atom &atom : local_UC.m_Sr_atoms) {
+//			atom.m_position -= local_UC.m_COM;
+//		}
+//
+//		double alpha { helper::gradientDescent(step_size, tetragonal_UC, local_UC) };
+//
+//		Vectors displacements;
+//		displacements.reserve(8);
+//
+//		Position rotatedPoint;
+//		for (size_t i : std::ranges::views::iota(8)) {
+//			rotatedPoint = helper::rotatePoint(alpha, tetragonal_UC.m_A_cart_nopbc.at(i).m_position);
+//			displacements.push_back(local_UC.m_A_cart_nopbc.at(i).m_position - rotatedPoint);
+//		}
+//
+//		// calculate BEC
+//	}
+//}
 }
