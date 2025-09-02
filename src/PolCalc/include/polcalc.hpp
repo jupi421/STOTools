@@ -1,12 +1,15 @@
 #pragma once
 
+#include <iomanip>
 #include <iostream>
 #include <fstream>
+#include <deque>
 #include <stdexcept>
 #include <expected>
 #include <print>
 #include <string>
 #include <vector>
+#include <array>
 #include <algorithm>
 #include <ranges>
 #include <utility>
@@ -26,12 +29,18 @@ using Vectors = std::vector<Vector>;
 using NNIds = std::vector<std::pair<size_t, double>>; 
 
 enum class DWType {
-	HT, HH, APB, Unknown
+	HT=0, HH, APB, Unknown
 };
 
 enum class AtomType {
-	Sr, Ti, O, Unknown
+	Sr=0, Ti, O, Unknown
 };
+
+enum class Observable { 
+	OP, Polarization
+};
+
+constexpr std::array<double, 3> ATOM_MASSES_U { 87.62, 47.867, 15.999 };
 
 struct Atom {
 	AtomType m_atom_type { AtomType::Unknown };
@@ -59,6 +68,24 @@ struct AtomPositions {
 	}
 };
 
+struct ObservableData {
+	Observable m_observable;
+	std::vector<double> m_bin_center;
+	Vectors m_observable_average;
+	Vectors m_observable_variance;
+
+	ObservableData() = delete;
+
+	ObservableData(size_t arr_size) {
+		m_bin_center.reserve(arr_size);
+		m_observable_average.reserve(arr_size);
+		m_observable_variance.reserve(arr_size);
+	}
+
+	ObservableData(std::vector<double> center, Vectors average, Vectors variance, Observable observable) 
+		: m_bin_center(center), m_observable_average(average), m_observable_variance(variance), m_observable(observable)
+	{} 
+};
 
 std::expected<std::vector<NNIds>, std::string> getNearestNeighbors(const Atoms& atoms, 
 																   const Atoms& reference_atoms,
@@ -95,14 +122,56 @@ class UnitCell {
 	}
 
 	public:
-	UnitCell() {};
+	UnitCell() {
+		m_A_cart_nopbc.reserve(4);
+		m_O_cart_nopbc.reserve(3);
+	}
+
+	UnitCell(AtomType type_A, AtomType type_B) {
+		m_A_cart_nopbc.reserve(4);
+		m_O_cart_nopbc.reserve(3);
+
+		constexpr double a { 3.905 };
+		constexpr double c { a }; 
+
+		Eigen::Vector3d ex = Eigen::Vector3d(1, 0, 0);
+		Eigen::Vector3d ey = Eigen::Vector3d(0, 1, 0);
+		Eigen::Vector3d ez = Eigen::Vector3d(0, 0, 1);
+
+		auto fill_pristine_A = [&](AtomType type, Position&& pos) {
+			Atom first { type, pos };
+			pos[1] *= -1;
+			Atom second { type, pos }; // mirroring first at xz plane
+			m_A_cart_nopbc.emplace_back(std::move(first), std::move(second));
+		};
+
+		// front lower left, back lower left, then anticlockwise
+		fill_pristine_A(type_A, - 0.5*a*ex + 0.5*a*ey - 0.5*c*ez);
+		fill_pristine_A(type_A, 0.5*a*ex + 0.5*a*ey - 0.5*c*ez);
+		fill_pristine_A(type_A, 0.5*a*ex + 0.5*a*ey + 0.5*c*ez);
+		fill_pristine_A(type_A, -0.5*a*ex + 0.5*a*ey + 0.5*c*ez);
+
+		m_B_cart_nopbc = Atom(type_B, Position::Zero());
+
+		auto fill_pristine_O = [&](AtomType type, Position&& pos_first, Position&& pos_second){
+			Atom first { type, pos_first };
+			Atom second { type, pos_second };
+			m_O_cart_nopbc.emplace_back(std::move(first), std::move(second));
+		};
+
+		// filled to resemble the primitive unit cell
+		fill_pristine_O(AtomType::O, -0.5*a*ey, 0.5*a*ey); // front, back
+		fill_pristine_O(AtomType::O, -0.5*a*ez, 0.5*a*ez); // bottom, top
+		fill_pristine_O(AtomType::O, -0.5*a*ex, 0.5*a*ex); // left, right
+	}
 
 	UnitCell(AtomType type_A, AtomType type_B, short O_rot_sign /* = +- 1*/, 
 		  const Eigen::Quaterniond& orientation, double rot_angle = 3, 
 		  AtomType type_O = AtomType::O)
 		: m_orientation(orientation)
 	{
-		m_A_cart_nopbc.reserve(8);
+		m_A_cart_nopbc.reserve(4);
+		m_O_cart_nopbc.reserve(3);
 
 		constexpr double a { 3.905 };
 		constexpr double c { a }; 
@@ -127,9 +196,14 @@ class UnitCell {
 		m_B_cart_nopbc = Atom(type_B, Position::Zero());
 
 		auto fill_pristine_O = [&](AtomType type, Position&& pos_first, Position&& pos_second, const Vector& rot_axis){
-			double angle { rot_angle*O_rot_sign };
 			Atom first { type, pos_first };
 			Atom second { type, pos_second };
+			if (rot_angle == 0.0) {
+				m_O_cart_nopbc.emplace_back(std::move(first), std::move(second));
+				return;
+			}
+
+			double angle { rot_angle*O_rot_sign };
 			if (rot_axis != Vector(0,0,0)) {
 				applyRotationO(first, angle, rot_axis);
 				applyRotationO(second, angle, rot_axis);
@@ -170,8 +244,12 @@ class UnitCell {
 	}
 
 	template<typename T>
-	UnitCell getRotatedUC(const T& R, short permutation_number=0, Rotation permutation_direction=Rotation::None) const {
-		UnitCell rotated_UC { *this };
+	// add expected value later
+	void RotateUC(const T& R, short permutation_number=0, Rotation permutation_direction=Rotation::None) {
+		if (permutation_number > 3 || permutation_number < 0) {
+			throw std::runtime_error("permutation_number has to be in [0,3]!");
+		}
+
 		Eigen::Quaterniond unit_quaternion { R }; // if R is rotation matrix, convert to unit quaternion
 
 		auto rotate_points = [&](std::vector<std::pair<Atom, Atom>>& pairs) {
@@ -184,7 +262,7 @@ class UnitCell {
 			return rotated_atoms;
 		};
 
-		auto permute = [&rotated_UC, &permutation_number, &permutation_direction](std::vector<std::pair<Atom, Atom>>& pairs) {
+		auto permute = [this, &permutation_number, &permutation_direction](std::vector<std::pair<Atom, Atom>>& pairs) {
 			if (permutation_direction == Rotation::None || permutation_number == 0) {
 				return;
 			}
@@ -194,15 +272,20 @@ class UnitCell {
 			else {
 				std::ranges::rotate(pairs, pairs.end()-permutation_number);
 			}
-			rotated_UC.m_permutation_number = permutation_number;
+			m_permutation_number = permutation_number;
 		};
 
-		rotated_UC.m_A_cart_nopbc = rotate_points(rotated_UC.m_A_cart_nopbc);
-		rotated_UC.m_O_cart_nopbc = rotate_points(rotated_UC.m_O_cart_nopbc);
-		rotated_UC.m_orientation *= unit_quaternion;
+		m_A_cart_nopbc = rotate_points(m_A_cart_nopbc);
+		m_O_cart_nopbc = rotate_points(m_O_cart_nopbc);
+		m_orientation *= unit_quaternion;
 
-		permute(rotated_UC.m_A_cart_nopbc);
+		permute(m_A_cart_nopbc);
+	}
 
+	template<typename T>
+	UnitCell getRotatedUC(const T& R, short permutation_number=0, Rotation permutation_direction=Rotation::None) const {
+		UnitCell rotated_UC { *this };
+		rotated_UC.RotateUC(R, permutation_number, permutation_direction);
 		return rotated_UC;
 	}
 
@@ -225,11 +308,17 @@ public:
 		left, right, center, Unknown
 	};
 
+	enum class PhaseFactor {
+		negative = -1, positive = 1
+	};
+
 	std::vector<std::pair<Atom, Atom>> m_A_direct_pbc { };
 	Atom m_B_direct_pbc { };
 	std::vector<std::pair<Atom, Atom>> m_O_direct_pbc { };
+
 	std::optional<std::tuple<Eigen::Quaterniond, short, Rotation>> m_orientation; // recipe how to transform unrotated reference cell: Quaternion for the spacial rotation, Rotation for rotating the Sr edges (permutation) either right or left by one
-	std::optional<short> O_rot_sign;
+	std::optional<short> m_O_rot_sign;
+
 	DWSide m_side { DWSide::Unknown };
 	DWType m_type { DWType::Unknown };
 
@@ -237,12 +326,17 @@ public:
 	using UnitCell::m_B_cart_nopbc;
 	using UnitCell::m_O_cart_nopbc;
 	using UnitCell::m_COM_cart_nopbc;
+	std::optional<Vector> m_local_OP;
+	std::optional<Vector> m_local_polarization;
 	using UnitCell::operator-;
 	using UnitCell::Rotation;
+
+	void rotateUC() = delete;
 
 private:
 	static inline std::optional<std::tuple<Eigen::Quaterniond, short, Rotation>> m_right_init_orientation;
 	static inline std::optional<std::tuple<Eigen::Quaterniond, short, Rotation>> m_left_init_orientation;
+	std::optional<PhaseFactor> m_phase_factor;
 	Eigen::Matrix3d m_metric;
 
 	static Position minimumImage(const Position& pos) {
@@ -415,8 +509,8 @@ public:
 		return std::unexpected("Rotation not set!");
 	}
 
-	explicit LocalUC(const Atoms& A, const Atom& B, const Atoms& O, DWType DW_type, const Eigen::Matrix3d& cell_matrix, double DW_center_x = 0.5, double tolerance = 1e-3) 
-		: m_B_direct_pbc(B), m_metric(cell_matrix.transpose() * cell_matrix), m_type(DW_type)
+	explicit LocalUC(const Atoms& A, const Atom& B, const Atoms& O, PhaseFactor phase_factor, DWType DW_type, const Eigen::Matrix3d& cell_matrix, double DW_center_x = 0.5, double tolerance = 1e-3) 
+		: m_B_direct_pbc(B), m_metric(cell_matrix.transpose() * cell_matrix), m_phase_factor(phase_factor), m_type(DW_type)
 	{
 		if (A.size() != 8) {
 			throw std::runtime_error("LocalUC, Expected corners: 8, recieved: " + std::to_string(A.size()));
@@ -657,10 +751,79 @@ public:
 		center(centered_uc.m_A_cart_nopbc);
 		center(centered_uc.m_O_cart_nopbc);
 		centered_uc.m_B_cart_nopbc.m_position -= m_COM_cart_nopbc;
+		centered_uc.m_COM_cart_nopbc.setZero();
 		return centered_uc;
 	}
+
+	short getPhaseFactor() const {
+		return m_phase_factor.value() == PhaseFactor::positive ? 1 : -1;
+	}
 	
-	void rotateUC() = delete;
+
+	inline void calculateLocalOP() {
+		// pass uncentered unit cell
+		// centered at origin, ey into plane, sequence: Sr front lower left, Ti, O front, O bottom, O left
+		const Eigen::Quaterniond& unit_quaternion { std::get<0>(getOrientation().value()) };
+		const short permutation_number { std::get<1>(getOrientation().value()) };
+		const UnitCell::Rotation permutation_direction { std::get<2>(getOrientation().value()) };
+
+		Vector zeros { Vector::Zero() };
+		Vector ex { 1, 0, 0 };
+		Vector ey { 0, 1, 0 };
+		Vector ez { 0, 0, 1 };
+
+		Vector ex_rot { unit_quaternion*ex };
+		Vector ey_rot { unit_quaternion*ey };
+		Vector ez_rot { unit_quaternion*ez };
+		
+		Eigen::VectorXd phonon_pol_z_rot(15); // { 0, 0, 0,   0, 0, 0,   1, 0, 0,   0,  0, 0,   0, -1, 0 }
+		Eigen::VectorXd phonon_pol_x_rot(15); // { 0, 0, 0,   0, 0, 0,   0, 0, 1,   0, -1, 0,   0,  0, 0 }
+		Eigen::VectorXd phonon_pol_y_rot(15); // { 0, 0, 0,   0, 0, 0,   0, 0, 0,  -1,  0, 0,   0,  0, 1 }
+
+		phonon_pol_z_rot << zeros, zeros, ex_rot, zeros, -ey_rot;
+		phonon_pol_x_rot << zeros, zeros, ez_rot, -ey_rot, zeros;
+		phonon_pol_y_rot << zeros, zeros, zeros, -ex_rot, ez_rot;
+		phonon_pol_z_rot.normalize();
+		phonon_pol_x_rot.normalize();
+		phonon_pol_y_rot.normalize();
+
+
+		UnitCell reference_UC_rotated { UnitCell(AtomType::Sr, AtomType::Ti) };
+		reference_UC_rotated.RotateUC(unit_quaternion, permutation_number, permutation_direction);
+		LocalUC local_UC_centered { getCenteredUC() };
+
+		double m_Sr { ATOM_MASSES_U.at(0) };
+		double m_Ti { ATOM_MASSES_U.at(1) };
+		double m_O { ATOM_MASSES_U.at(2) };
+		double total_mass { m_Sr + m_Ti + 3*m_O };
+
+		UnitCell::Displacements displacements { local_UC_centered - reference_UC_rotated };
+		Vector Sr_displacement_mass_weighted { sqrt(m_Sr/total_mass)*displacements.m_A_displacements.at(0).first };
+		Vector Ti_displacement_mass_weighted { sqrt(m_Ti/total_mass)*displacements.m_B_displacement };
+		Vector O_front_displacement_mass_weighted { sqrt(m_O/total_mass)*displacements.m_O_displacements.at(0).first };
+		Vector O_bottom_displacement_mass_weighted { sqrt(m_O/total_mass)*displacements.m_O_displacements.at(1).first };
+		Vector O_left_displacement_mass_weighted { sqrt(m_O/total_mass)*displacements.m_O_displacements.at(2).first };
+
+		Eigen::VectorXd mass_weighted_displacements(15);
+		mass_weighted_displacements << Sr_displacement_mass_weighted,
+									   Ti_displacement_mass_weighted,
+									   O_front_displacement_mass_weighted,
+									   O_bottom_displacement_mass_weighted,
+									   O_left_displacement_mass_weighted;
+
+		// fill OP, sequence z rot, x rot, y rot
+		double phi_1 { mass_weighted_displacements.dot(phonon_pol_z_rot) };
+		double phi_2 { mass_weighted_displacements.dot(phonon_pol_x_rot) };
+		double phi_3 { mass_weighted_displacements.dot(phonon_pol_y_rot) };
+
+		Vector phi { phi_1, phi_2, phi_3 };
+		short phase_factor {getPhaseFactor()};
+
+		m_local_OP = phase_factor*phi;
+	}
+
+	inline void getLocalPolarization(/*, Tensor BEC*/);
+
 };
 
 inline double getSqDistance(const Vector& r, const std::optional<Eigen::Matrix3d>& cell_matrix = std::nullopt) {
@@ -773,6 +936,36 @@ inline Eigen::Matrix3d getRotationMatrix(const Eigen::Quaterniond& unit_quaterni
 	return 2*rotation_matrix;
 }
 
+inline std::vector<LocalUC::PhaseFactor> findPhaseFactor(const Atoms& B, const std::vector<NNIds>& B_NNs) {
+	// two coloring BFS algorithm to traverse the lattice as a spanning graph and setting the bloch wave phase factor accordingly
+	std::vector<int> phase_factors(B.size(), 0);
+	std::deque<size_t> queue;
+
+	queue.push_back(0);
+	phase_factors.at(0) = 1; // seed the initial phase factor
+	while (!queue.empty()) {
+		size_t current_parent_id { queue.front() };
+		queue.pop_front();
+
+		for (const auto& [current_child_id, dist] : B_NNs.at(current_parent_id)) {
+			if (phase_factors.at(current_child_id) == 0) {
+				queue.push_back(current_child_id);
+				phase_factors.at(current_child_id) = -1*phase_factors.at(current_parent_id);
+			}
+			if (phase_factors.at(current_child_id) == phase_factors.at(current_parent_id)) {
+				throw std::runtime_error("Neighboring cells have the same phase_factor!");
+			}
+		}
+	}
+
+	std::vector<LocalUC::PhaseFactor> out; out.reserve(B.size());
+	for (size_t i { }; i < B.size(); i++) {
+		out.emplace_back(phase_factors.at(i) > 0 ? LocalUC::PhaseFactor::positive : LocalUC::PhaseFactor::negative);
+	}
+
+	return out;
+}
+
 inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const LocalUC &local_UC, double step_size, const std::tuple<Eigen::Quaterniond, short, UnitCell::Rotation>& init_orientation) {
 	constexpr double threshold { 1e-12 };
 	constexpr size_t max_iter { 1000 };
@@ -791,7 +984,7 @@ inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const Loc
 	LocalUC local_UC_centered { local_UC.getCenteredUC() };
 
 	size_t cur_iter { };
-	double cur_sq_dist { sq_dist(local_UC - pristine_UC_init )};
+	double cur_sq_dist { sq_dist(local_UC_centered - pristine_UC_init )};
 	double diff_A { std::numeric_limits<double>::infinity() };
 
 
@@ -840,7 +1033,7 @@ inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const Loc
 			double sum { };
 			for (size_t i { }; i < 4; i++) {
 				const std::pair<Atom, Atom>& pristine_atoms_A = pristine_UC_init.m_A_cart_nopbc[i];
-				const std::pair<Atom, Atom>& local_atoms_A = local_UC.m_A_cart_nopbc[i];
+				const std::pair<Atom, Atom>& local_atoms_A = local_UC_centered.m_A_cart_nopbc[i];
 
 				sum += local_atoms_A.first.m_position.dot(grad_R*pristine_atoms_A.first.m_position);
 				sum += local_atoms_A.second.m_position.dot(grad_R*pristine_atoms_A.second.m_position);
@@ -853,7 +1046,7 @@ inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const Loc
 		Eigen::Matrix3d rotation_matrix { getRotationMatrix(current_unit_quaternion) };
 
 		
-		double new_sq_dist { sq_dist(local_UC - pristine_UC_init.getRotatedUC(rotation_matrix)) };
+		double new_sq_dist { sq_dist(local_UC_centered - pristine_UC_init.getRotatedUC(rotation_matrix)) };
 
 		diff_A = std::abs(new_sq_dist - cur_sq_dist);
 		cur_sq_dist = new_sq_dist;
@@ -928,11 +1121,8 @@ inline void findInitialOrientation(LocalUC& local_UC, double step_size) {
 	local_UC.m_orientation = final_orientation.value();
 }
 
-inline void getOP(const LocalUC& local_UC, const UnitCell& pristine_UC) {
-}
 
-inline void getPolarization(const LocalUC& local_UC) { 
-}
+
 }
 
 inline Positions loadPosFromFile(std::string filename,
@@ -1030,14 +1220,15 @@ inline std::expected<std::vector<NNIds>, std::string> getNearestNeighbors(const 
 }
 
 inline std::vector<helper::LocalUC> createLocalUCs(const Atoms& A, const Atoms& B, const Atoms& O,
-						   const std::vector<NNIds>& A_NNIds_all, const std::vector<NNIds>& O_NNIds_all,
-						   DWType DW_type, Eigen::Matrix3d& cell_matrix) {
+												   const std::vector<NNIds>& A_NNIds_all, const std::vector<NNIds>& O_NNIds_all, 
+												   const std::vector<helper::LocalUC::PhaseFactor> phase_factors, DWType DW_type, 
+												   Eigen::Matrix3d& cell_matrix) {
 
 	std::vector<helper::LocalUC> local_UCs;
 	local_UCs.reserve(B.size());
 
 	const auto B_ids = std::ranges::views::iota(size_t {0}, B.size()) ;
-	for (const auto& [A_NNIds, B_id, O_NNIds] : std::ranges::views::zip(A_NNIds_all, B_ids, O_NNIds_all)) {
+	for (const auto& [A_NNIds, B_id, O_NNIds, phase_factor] : std::ranges::views::zip(A_NNIds_all, B_ids, O_NNIds_all, phase_factors)) {
 
 		auto fill_atoms = [](const auto& NNids, const Atoms& atoms, Atoms& container) {
 			for (auto NN : NNids) {
@@ -1052,17 +1243,111 @@ inline std::vector<helper::LocalUC> createLocalUCs(const Atoms& A, const Atoms& 
 		fill_atoms(A_NNIds, A, A_local);
 		fill_atoms(O_NNIds, O, O_local);
 
-		local_UCs.emplace_back(std::move(A_local), std::move(B_local), std::move(O_local), DW_type, cell_matrix);
+		local_UCs.emplace_back(std::move(A_local), std::move(B_local), std::move(O_local), phase_factor, DW_type, cell_matrix);
 	}
 	return local_UCs;
 }
 
-inline void getOPAndPolarization(std::vector<helper::LocalUC>& local_UCs, double step_size) {
+
+inline ObservableData calculateObservable(const std::vector<helper::LocalUC>& local_UCs, double threshold = 0.25 /*in angstroem*/) { //different behavior for either P or OP
+	std::vector<helper::LocalUC> local_UCs_cp { local_UCs };
+	std::ranges::sort(local_UCs_cp, [](const auto& lhs, const auto& rhs) {
+		return lhs.m_B_cart_nopbc.m_position.x() < rhs.m_B_cart_nopbc.m_position.x();
+	});
+
+	std::vector<bool> used(local_UCs.size(), false);
+	std::vector<std::pair<double, Vectors>> bins; // storing x value (bins) and OP of the Local UC at that position
+
+	// sorting bins
+	while (true) {
+		auto it_current = std::ranges::find(used, false);
+		if (it_current == used.end()) {
+			break;
+		}
+
+		size_t current_id { static_cast<size_t>(std::distance(used.begin(), it_current)) };
+
+		std::pair<double, Vectors> current_bin;
+		double current_pos { local_UCs_cp.at(current_id).m_B_cart_nopbc.m_position.x() };
+		current_bin.second.emplace_back(local_UCs_cp.at(current_id).m_local_OP.value());
+		*it_current = true;
+
+		double current_bin_center { current_pos };
+		for (size_t i { current_id }; i < used.size(); i++) {
+			if (used.at(i)) {
+				continue;
+			}
+
+			double new_pos { local_UCs_cp.at(i).m_B_cart_nopbc.m_position.x() };
+			double diff_x { std::abs(current_pos - new_pos) };
+
+			if (diff_x > threshold) {
+				break; // because nothing after would fall into the bin anyway
+			}
+			
+			current_bin.second.emplace_back(local_UCs_cp.at(i).m_local_OP.value());
+			used.at(i) = true;
+			current_bin_center += new_pos;
+		}
+
+		current_bin.first = current_bin_center / current_bin.second.size();
+		bins.emplace_back(current_bin);
+	}
+
+	ObservableData observable(bins.size());
+	for (auto& pair : bins) {
+		observable.m_bin_center.emplace_back(pair.first);
+	}
+
+	// calculate average and variance
+	for (const auto& [bin_center, obs] : bins) {
+		Vector bin_avg { Vector::Zero() };
+		for (const auto& vec : obs) {
+			bin_avg += vec;	
+		}
+		bin_avg /= obs.size();
+		observable.m_observable_average.emplace_back(std::move(bin_avg));
+	}
+	
+	for (const auto& [bin_data, avg] : std::ranges::views::zip(bins, observable.m_observable_average)) {
+		Vector bin_var { Vector::Zero() };
+		for (const auto& obs : bin_data.second) {
+			Vector diff { obs - avg };
+			bin_var += (diff.array() * diff.array()).matrix();
+		}
+		bin_var /= bin_data.second.size() - 1;
+		observable.m_observable_variance.emplace_back(std::move(bin_var));
+	}
+
+	return observable;
+}
+
+inline void calculateLocalObservables(std::vector<helper::LocalUC>& local_UCs, double step_size) {
 	// write a custom find/set initial orientation function for APBs 
 	std::vector<helper:: LocalUC> DW_center_init; // containing all center DWs picked befor local z axis could be determined
 	
 	helper::UnitCell pristine_UC_sp { AtomType::Sr, AtomType::Ti, 1, { 1, 0, 0, 0 } }; // sigma +1 UC
 	helper::UnitCell pristine_UC_sn { AtomType::Sr, AtomType::Ti, -1, { 1, 0, 0, 0 } }; // sigma -1 UC
+	
+	auto findOrientation = [&](helper::LocalUC& local_UC){
+		auto local_UC_initial = local_UC.getInitialOrientation().value();
+		Eigen::Quaterniond best_quaternion { helper::gradientDescent(pristine_UC_sp, local_UC,  0.05, local_UC_initial) };
+		local_UC.m_orientation = std::make_tuple(best_quaternion, std::get<1>(local_UC_initial), std::get<2>(local_UC_initial));
+
+		Position front_O_sp { pristine_UC_sp.getRotatedUC(best_quaternion).m_O_cart_nopbc.at(0).first.m_position };
+		Position front_O_sn { pristine_UC_sn.getRotatedUC(best_quaternion).m_O_cart_nopbc.at(0).first.m_position };
+		Position local_UC_front_O { local_UC.m_O_cart_nopbc.at(0).first.m_position };
+
+		double displacement_sp { (front_O_sp - local_UC_front_O).squaredNorm() };
+		double displacement_sn { (front_O_sn - local_UC_front_O).squaredNorm() };
+
+		displacement_sp < displacement_sn ? local_UC.m_O_rot_sign = 1 : local_UC.m_O_rot_sign = -1;
+
+		local_UC.sortOs(best_quaternion);
+
+		// calculate OP and Polarization
+		local_UC.calculateLocalOP();
+	};
 
 	bool is_first { true };
 	for (auto&& local_UC : local_UCs) {
@@ -1087,50 +1372,29 @@ inline void getOPAndPolarization(std::vector<helper::LocalUC>& local_UCs, double
 			double displacement_sp { (front_O_sp - local_UC_front_O).squaredNorm() };
 			double displacement_sn { (front_O_sn - local_UC_front_O).squaredNorm() };
 
-			displacement_sp < displacement_sn ? local_UC.O_rot_sign = 1 : local_UC.O_rot_sign = -1;
+			displacement_sp < displacement_sn ? local_UC.m_O_rot_sign = 1 : local_UC.m_O_rot_sign = -1;
 
 			local_UC.sortOs(best_quaternion);
 
 			// calculate OP and Polarization
+			local_UC.calculateLocalOP();
 		};
 	}
 }
 
+// add append option
+inline void write(std::string filename, const ObservableData& data) {
+	std::ofstream out { filename };
+	if (!out) {
+		throw std::runtime_error("failed to open file");
+	}
 
-//inline void getPolarization(const double step_size, const Atoms &atoms, const std::vector<NNIds> &nearest_neighbors) {
-//	// atoms should be same element as nearest_neighbors
-//	const helper::UnitCell tetragonal_UC { };
-//
-//	Atoms local_UC_atoms;
-//	local_UC_atoms.reserve(8);
-//
-//	if (atoms.size() != nearest_neighbors.size()) {
-//		throw std::runtime_error("Mismatch in size of atoms and nearest_neighbors!");
-//	}
-//
-//	for (const NNIds &pair_ref_atom_id_nn : nearest_neighbors) { // nearest neighbors for each center atom -> UC
-//
-//		for (const auto &[nn_id, _]: pair_ref_atom_id_nn) {
-//			local_UC_atoms.emplace_back(atoms.at(nn_id));
-//		} 
-//
-//		helper::LocalUC local_UC { helper::LocalUC(local_UC_atoms) };
-//		for (Atom &atom : local_UC.m_Sr_atoms) {
-//			atom.m_position -= local_UC.m_COM;
-//		}
-//
-//		double alpha { helper::gradientDescent(step_size, tetragonal_UC, local_UC) };
-//
-//		Vectors displacements;
-//		displacements.reserve(8);
-//
-//		Position rotatedPoint;
-//		for (size_t i : std::ranges::views::iota(8)) {
-//			rotatedPoint = helper::rotatePoint(alpha, tetragonal_UC.m_A_cart_nopbc.at(i).m_position);
-//			displacements.push_back(local_UC.m_A_cart_nopbc.at(i).m_position - rotatedPoint);
-//		}
-//
-//		// calculate BEC
-//	}
-//}
+	out.setf(std::ios::scientific);
+	out << std::setprecision(8);
+
+	for (const auto& [center, avg, var] : std::ranges::views::zip(data.m_bin_center, data.m_observable_average, data.m_observable_variance)) {
+		out << center << ' ' << avg.x() << ' ' << avg.y() << ' ' << avg.z()
+			<< ' ' << var.x() << ' ' << var.y() << ' ' << var.z() << '\n';
+	}
+}
 }
