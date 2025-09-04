@@ -19,6 +19,7 @@
 #include <Eigen/Geometry>
 
 // TODO use openACC to parallelise on cpu or cuda
+// for multiple frames reset the static orientation in the LocalUCs
 // write different behavior for other filetypes (CONTCAR, XDATCAR, xyz, ...), calculate atom numbers??? 
 namespace PolCalc {
 
@@ -56,14 +57,14 @@ using Atoms = std::vector<Atom>;
 
 struct AtomPositions {
 
-	Atoms m_Sr {};
-	Atoms m_Ti {};
+	Atoms m_A {};
+	Atoms m_B {};
 	Atoms m_O {};
 
 	AtomPositions() = default;
 	AtomPositions(const size_t N_Sr, const size_t N_Ti, const size_t N_O) {
-		m_Sr.reserve(N_Sr);
-		m_Ti.reserve(N_Ti);
+		m_A.reserve(N_Sr);
+		m_B.reserve(N_Ti);
 		m_O.reserve(N_O);
 	}
 };
@@ -113,7 +114,7 @@ class UnitCell {
 
 	private:
 	Eigen::Quaterniond m_orientation { 1, 0, 0, 0 };
-	std::optional<short> m_permutation_number { std::nullopt };
+	short m_permutation_number { };
 
 	void applyRotationO(Atom& atom, double angle, const Vector& axis) {
 		// Rodriguez rotation
@@ -262,7 +263,7 @@ class UnitCell {
 			return rotated_atoms;
 		};
 
-		auto permute = [this, &permutation_number, &permutation_direction](std::vector<std::pair<Atom, Atom>>& pairs) {
+		auto permute = [this, permutation_number, permutation_direction](std::vector<std::pair<Atom, Atom>>& pairs) {
 			if (permutation_direction == Rotation::None || permutation_number == 0) {
 				return;
 			}
@@ -293,11 +294,8 @@ class UnitCell {
 		return m_orientation;
 	}
 
-	std::expected<short, std::string> getInitialPermutation() const {
-		if (!m_permutation_number) {
-			return std::unexpected("permutation number not set");
-		}
-		return m_permutation_number.value();
+	short getInitialPermutation() const {
+		return m_permutation_number;
 	}
 };
 
@@ -382,9 +380,6 @@ private:
 	}
 
 	void setDomain(const Position& ref, double DW_center_x, double tolerance) {
-		double distance_from_DW = wrapDirectCoordinates(ref)[0] - DW_center_x;
-		distance_from_DW -= round(distance_from_DW);
-
 		if (ref.x() < DW_center_x+tolerance && ref.x() > DW_center_x-tolerance) {
 			m_side = DWSide::center;
 		}
@@ -952,10 +947,13 @@ inline std::vector<LocalUC::PhaseFactor> findPhaseFactor(const Atoms& B, const s
 				queue.push_back(current_child_id);
 				phase_factors.at(current_child_id) = -1*phase_factors.at(current_parent_id);
 			}
+			std::println("{}, {}", current_child_id, phase_factors.at(current_child_id));
+			std::println("{}, {}", current_parent_id, phase_factors.at(current_parent_id));
 			if (phase_factors.at(current_child_id) == phase_factors.at(current_parent_id)) {
 				throw std::runtime_error("Neighboring cells have the same phase_factor!");
 			}
 		}
+		std::println("");
 	}
 
 	std::vector<LocalUC::PhaseFactor> out; out.reserve(B.size());
@@ -980,6 +978,7 @@ inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const Loc
 	};
 
 	Eigen::Quaterniond current_unit_quaternion { std::get<0>(init_orientation).normalized() };
+
 	UnitCell pristine_UC_init { pristine_UC.getRotatedUC(current_unit_quaternion, std::get<1>(init_orientation), std::get<2>(init_orientation))};
 	LocalUC local_UC_centered { local_UC.getCenteredUC() };
 
@@ -1043,10 +1042,8 @@ inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const Loc
 		}
 
 		current_unit_quaternion = new_unit_quaternion.normalized();
-		Eigen::Matrix3d rotation_matrix { getRotationMatrix(current_unit_quaternion) };
-
 		
-		double new_sq_dist { sq_dist(local_UC_centered - pristine_UC_init.getRotatedUC(rotation_matrix)) };
+		double new_sq_dist { sq_dist(local_UC_centered - pristine_UC_init.getRotatedUC(current_unit_quaternion)) };
 
 		diff_A = std::abs(new_sq_dist - cur_sq_dist);
 		cur_sq_dist = new_sq_dist;
@@ -1101,28 +1098,17 @@ inline void findInitialOrientation(LocalUC& local_UC, double step_size) {
 	Eigen::Quaterniond initial_quaternion { best_uc.second.getInitialOrientation() };
 	Eigen::Quaterniond best_orientation { initial_quaternion*unit_quaternion };
 	
-	auto final_orientation	{ 
-		best_uc.second.getInitialPermutation()
-			.transform([&](short value) {
-				return std::make_tuple(best_orientation, value, UnitCell::Rotation::left);
-			})
-	};
+	short permutation_num = best_uc.second.getInitialPermutation();
+	std::tuple<Eigen::Quaterniond, short, UnitCell::Rotation> final_orientation = std::make_tuple(best_orientation, permutation_num, UnitCell::Rotation::left);
 	
-	if (!final_orientation) { // temporary, implement proper error handling, save progress, then terminate program
-		throw std::runtime_error(std::string("In getInitialPermutation: " + final_orientation.error()));
-	}
-
-	std::expected<void, std::string> res = local_UC.setInitialOrientation(final_orientation.value());
+	std::expected<void, std::string> res = local_UC.setInitialOrientation(final_orientation);
 
 	if (!res) {
 		throw std::runtime_error("set initial Orientation failed");
 	}
 
-	local_UC.m_orientation = final_orientation.value();
+	local_UC.m_orientation = final_orientation;
 }
-
-
-
 }
 
 inline Positions loadPosFromFile(std::string filename,
@@ -1160,6 +1146,114 @@ inline Positions loadPosFromFile(std::string filename,
     return positions;
 }
 
+// Add near the top of polcalc.hpp
+struct POSCARData {
+    Eigen::Matrix3d m_cell;              // columns are a, b, c
+    Positions       m_positions_direct;  // fractional coordinates
+    std::vector<std::string> m_symbols;
+    std::vector<size_t>       m_counts;
+};
+
+// Robust VASP4/5 parser (handles optional symbols line and Selective dynamics)
+inline std::expected<POSCARData, std::string>
+readPOSCAR(const std::string& filename)
+{
+    std::ifstream in(filename);
+    if (!in) return std::unexpected("Failed loading file: " + filename);
+
+    auto split = [](const std::string& s){
+        std::istringstream iss(s);
+        std::vector<std::string> t; for (std::string w; iss>>w;) t.push_back(w);
+        return t;
+    };
+    auto all_int = [](const std::vector<std::string>& v){
+        if (v.empty()) return false;
+        return std::ranges::all_of(v, [](const std::string& x){
+            char* e=nullptr; std::strtoll(x.c_str(), &e, 10); return e && *e=='\0';
+        });
+    };
+
+    std::string line;
+    // 1) comment
+    if (!std::getline(in, line)) return std::unexpected("Unexpected EOF at comment");
+    // 2) scale
+    if (!std::getline(in, line)) return std::unexpected("Unexpected EOF at scale");
+    double scale = std::stod(split(line).at(0));
+
+    auto read_vec = [&](Eigen::Vector3d& v)->bool{
+        if (!std::getline(in, line)) return false;
+        std::istringstream iss(line);
+        return static_cast<bool>(iss >> v[0] >> v[1] >> v[2]);
+    };
+
+    Eigen::Vector3d a,b,c;
+    if (!read_vec(a) || !read_vec(b) || !read_vec(c))
+        return std::unexpected("Unexpected EOF at lattice vectors");
+
+    // Build cell with lattice vectors as COLUMNS
+    Eigen::Matrix3d cell;
+    cell.col(0) = scale * a;
+    cell.col(1) = scale * b;
+    cell.col(2) = scale * c;
+
+    // 6) symbols or counts
+    if (!std::getline(in, line)) return std::unexpected("Unexpected EOF at symbols/counts");
+    auto toks = split(line);
+    std::vector<std::string> symbols;
+    std::vector<size_t> counts;
+
+    if (all_int(toks)) {
+        // VASP4: counts directly
+        for (auto& t : toks) counts.push_back(static_cast<size_t>(std::stoll(t)));
+    } else {
+        symbols = toks;
+        if (!std::getline(in, line)) return std::unexpected("Missing counts line");
+        auto cts = split(line);
+        if (!all_int(cts)) return std::unexpected("Counts line is not integers");
+        for (auto& t : cts) counts.push_back(static_cast<size_t>(std::stoll(t)));
+    }
+
+    // Optional "Selective dynamics"
+    std::streampos before_coord_type = in.tellg();
+    if (!std::getline(in, line)) return std::unexpected("Missing coordinate type");
+    {
+        auto low = line; std::ranges::transform(low, low.begin(), ::tolower);
+        if (!(low.starts_with("d") || low.starts_with("c"))) {
+            // assume this was "Selective dynamics", read the real coord-type next
+            if (!std::getline(in, line)) return std::unexpected("Missing coordinate type after Selective dynamics");
+        }
+    }
+    std::string coordtype = line;
+    std::string low = coordtype; std::ranges::transform(low, low.begin(), ::tolower);
+    bool direct = low.starts_with("d"); // "Direct" or "Fractional"
+
+    size_t n_atoms = 0; for (auto n : counts) n_atoms += n;
+
+    Positions pos; pos.reserve(n_atoms);
+    for (size_t i = 0; i < n_atoms; ++i) {
+        if (!std::getline(in, line)) return std::unexpected("Unexpected EOF in coordinates");
+        std::istringstream iss(line);
+        double x,y,z; 
+        if (!(iss >> x >> y >> z))
+            return std::unexpected("Bad coordinate line at atom " + std::to_string(i));
+        pos.emplace_back(x,y,z); // read as given
+    }
+
+    // Convert to DIRECT if needed
+    if (!direct) {
+        // r_dir = C^{-1} * r_cart
+        Eigen::Matrix3d invC = cell.inverse();
+        for (auto& p : pos) p = invC * p;
+    }
+
+    POSCARData out;
+    out.m_cell = cell;
+    out.m_positions_direct = std::move(pos);
+    out.m_symbols = std::move(symbols);
+    out.m_counts = std::move(counts);
+    return out;
+}
+
 inline std::expected<AtomPositions, std::string> sortPositionsByType(const Positions& positions, 
 																	 const size_t N_Sr, 
 																	 const size_t N_Ti, 
@@ -1167,19 +1261,19 @@ inline std::expected<AtomPositions, std::string> sortPositionsByType(const Posit
 	AtomPositions atom_positions(N_Sr, N_Ti, N_O);
 	std::ranges::copy(positions 
 				   | std::views::transform([](const Position& positions){ return Atom(AtomType::Sr, positions); }) 
-				   | std::views::take(N_Sr), std::back_inserter(atom_positions.m_Sr));
+				   | std::views::take(N_Sr), std::back_inserter(atom_positions.m_A));
 	std::ranges::copy(positions 
 				   | std::views::transform([](const Position& positions){ return Atom(AtomType::Ti, positions); }) 
-				   | std::views::drop(N_Sr) | std::views::take(N_Ti), std::back_inserter(atom_positions.m_Ti));
+				   | std::views::drop(N_Sr) | std::views::take(N_Ti), std::back_inserter(atom_positions.m_B));
 	std::ranges::copy(positions 
 				   | std::views::transform([](const Position& positions){ return Atom(AtomType::O, positions); }) 
 				   | std::views::drop(N_Sr+N_Ti) 
 				   | std::views::take(N_O), std::back_inserter(atom_positions.m_O));
 
-	if (atom_positions.m_Sr.size() != N_Sr) {
+	if (atom_positions.m_A.size() != N_Sr) {
 		return std::unexpected("m_Sr positions and N_Sr differ");
 	};
-	if (atom_positions.m_Ti.size() != N_Ti) {
+	if (atom_positions.m_B.size() != N_Ti) {
 		return std::unexpected("m_Ti positions and N_Ti differ");
 	}
 	if (atom_positions.m_O.size() != N_O) {
@@ -1192,8 +1286,7 @@ inline std::expected<AtomPositions, std::string> sortPositionsByType(const Posit
 inline std::expected<std::vector<NNIds>, std::string> getNearestNeighbors(const Atoms& atoms, 
 																		  const Atoms& ref_atoms,
 																		  const size_t n, 
-																		  const std::optional<Eigen::Matrix3d>& cell_matrix,
-																		  bool sort = false) {
+																		  const std::optional<Eigen::Matrix3d>& cell_matrix) {
 	
 	std::vector<NNIds> nearest_neighbors;
 	nearest_neighbors.reserve(ref_atoms.size());
@@ -1206,7 +1299,7 @@ inline std::expected<std::vector<NNIds>, std::string> getNearestNeighbors(const 
 			exclude_idx = atom_id;
 		}
 
-		auto res = helper::findNearestN(ref_atom, atoms, n, exclude_idx, cell_matrix, sort) 
+		auto res = helper::findNearestN(ref_atom, atoms, n, exclude_idx, cell_matrix, false) 
 			.transform([&nearest_neighbors](auto&& res) { nearest_neighbors.push_back(std::move(res)); });
 
 		if (!res) {
@@ -1324,14 +1417,15 @@ inline ObservableData calculateObservable(const std::vector<helper::LocalUC>& lo
 
 inline void calculateLocalObservables(std::vector<helper::LocalUC>& local_UCs, double step_size) {
 	// write a custom find/set initial orientation function for APBs 
-	std::vector<helper:: LocalUC> DW_center_init; // containing all center DWs picked befor local z axis could be determined
+	std::vector<size_t> DW_centers_init_ids; // containing all center DWs picked befor local z axis could be determined
+	DW_centers_init_ids.reserve(20);
 	
 	helper::UnitCell pristine_UC_sp { AtomType::Sr, AtomType::Ti, 1, { 1, 0, 0, 0 } }; // sigma +1 UC
 	helper::UnitCell pristine_UC_sn { AtomType::Sr, AtomType::Ti, -1, { 1, 0, 0, 0 } }; // sigma -1 UC
 	
-	auto findOrientation = [&](helper::LocalUC& local_UC){
+	auto getUnitCellData = [&](helper::LocalUC& local_UC) {
 		auto local_UC_initial = local_UC.getInitialOrientation().value();
-		Eigen::Quaterniond best_quaternion { helper::gradientDescent(pristine_UC_sp, local_UC,  0.05, local_UC_initial) };
+		Eigen::Quaterniond best_quaternion { helper::gradientDescent(pristine_UC_sp, local_UC, step_size, local_UC_initial) };
 		local_UC.m_orientation = std::make_tuple(best_quaternion, std::get<1>(local_UC_initial), std::get<2>(local_UC_initial));
 
 		Position front_O_sp { pristine_UC_sp.getRotatedUC(best_quaternion).m_O_cart_nopbc.at(0).first.m_position };
@@ -1341,7 +1435,7 @@ inline void calculateLocalObservables(std::vector<helper::LocalUC>& local_UCs, d
 		double displacement_sp { (front_O_sp - local_UC_front_O).squaredNorm() };
 		double displacement_sn { (front_O_sn - local_UC_front_O).squaredNorm() };
 
-		displacement_sp < displacement_sn ? local_UC.m_O_rot_sign = 1 : local_UC.m_O_rot_sign = -1;
+		displacement_sp <= displacement_sn ? local_UC.m_O_rot_sign = 1 : local_UC.m_O_rot_sign = -1;
 
 		local_UC.sortOs(best_quaternion);
 
@@ -1350,35 +1444,24 @@ inline void calculateLocalObservables(std::vector<helper::LocalUC>& local_UCs, d
 	};
 
 	bool is_first { true };
-	for (auto&& local_UC : local_UCs) {
-		if (is_first && local_UC.m_side == helper::LocalUC::DWSide::center) { // avoid artifacts due to different O placement in DW center cells
-			DW_center_init.emplace_back(local_UC);
+	for (size_t i { }; i < local_UCs.size(); i++) {
+		if (is_first && local_UCs.at(i).m_side == helper::LocalUC::DWSide::center) { // avoid artifacts due to different O placement in DW center cells
+			DW_centers_init_ids.push_back(i);
 			continue;
 		}
 
 		if (is_first) {
-			helper::findInitialOrientation(local_UC, step_size);
+			helper::findInitialOrientation(local_UCs.at(i), step_size);
+			getUnitCellData(local_UCs.at(i));
 			is_first = false;
 		}
 		else {
-			auto local_UC_initial = local_UC.getInitialOrientation().value();
-			Eigen::Quaterniond best_quaternion { helper::gradientDescent(pristine_UC_sp, local_UC,  0.05, local_UC_initial) };
-			local_UC.m_orientation = std::make_tuple(best_quaternion, std::get<1>(local_UC_initial), std::get<2>(local_UC_initial));
-
-			Position front_O_sp { pristine_UC_sp.getRotatedUC(best_quaternion).m_O_cart_nopbc.at(0).first.m_position };
-			Position front_O_sn { pristine_UC_sn.getRotatedUC(best_quaternion).m_O_cart_nopbc.at(0).first.m_position };
-			Position local_UC_front_O { local_UC.m_O_cart_nopbc.at(0).first.m_position };
-
-			double displacement_sp { (front_O_sp - local_UC_front_O).squaredNorm() };
-			double displacement_sn { (front_O_sn - local_UC_front_O).squaredNorm() };
-
-			displacement_sp < displacement_sn ? local_UC.m_O_rot_sign = 1 : local_UC.m_O_rot_sign = -1;
-
-			local_UC.sortOs(best_quaternion);
-
-			// calculate OP and Polarization
-			local_UC.calculateLocalOP();
+			getUnitCellData(local_UCs.at(i));
 		};
+	}
+
+	for (size_t i : DW_centers_init_ids) {
+		getUnitCellData(local_UCs.at(i));
 	}
 }
 
