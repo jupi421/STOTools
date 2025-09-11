@@ -970,9 +970,9 @@ inline std::vector<LocalUC::PhaseFactor> findPhaseFactor(const Atoms& B, const s
 	return out;
 }
 
-inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const LocalUC &local_UC, double step_size, 
-										  const std::tuple<Eigen::Quaterniond, short, UnitCell::Rotation>& init_orientation) {
-	constexpr double threshold { 1e-14 };
+inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const LocalUC &local_UC, 
+										  const std::tuple<Eigen::Quaterniond, short, UnitCell::Rotation>& init_orientation, double step_size = 0.0005 ) {
+	constexpr double threshold { 1e-12 };
 	constexpr size_t max_iter { 1000 };
 
 	auto sq_dist = [](UnitCell::Displacements displacements) {
@@ -990,6 +990,7 @@ inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const Loc
 	UnitCell pristine_UC_init { pristine_UC.getRotatedUC(initial_quaternion, std::get<1>(init_orientation), std::get<2>(init_orientation))};
 	LocalUC local_UC_centered { local_UC.getCenteredUC() };
 
+	double cur_step_size { step_size };
 	size_t cur_iter { };
 	double cur_sq_dist { sq_dist(local_UC_centered - pristine_UC_init )};
 	double diff_A { std::numeric_limits<double>::infinity() };
@@ -1029,39 +1030,50 @@ inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const Loc
 		}
 	};
 
+	auto g = [&]() {
+		Eigen::Quaterniond g;
+		auto& g_coeff { g.coeffs() };
 
-	std::pair<Atom, Atom> pristine_atoms_A;
-	std::pair<Atom, Atom> local_atoms_A;
-	Position pos_upper_rot {};
-	Position pos_lower_rot {};
-
-	while (cur_iter++ < max_iter && diff_A > threshold) {
-		const auto& current_quaternion_coeff { current_unit_quaternion.coeffs() };
-		Eigen::Quaterniond new_unit_quaternion { 1, 0, 0, 0 };
-		auto& new_quaternion_coeff { new_unit_quaternion.coeffs() };
-		for (size_t j { }; j < 4; j++) {
-			const Eigen::Matrix3d grad_R { gradR(j) };
+		for (size_t i { }; i < 4; i++) {
+			const Eigen::Matrix3d grad_R_i { gradR(i) }; 
 			double sum { };
-			for (size_t i { }; i < 4; i++) {
-				//std::pair<Atom, Atom>& pristine_atoms_A = pristine_UC_init.m_A_cart_nopbc[i];
-				//std::pair<Atom, Atom>& local_atoms_A = local_UC_centered.m_A_cart_nopbc[i];
-				pristine_atoms_A = pristine_UC_init.m_A_cart_nopbc[i];
-				local_atoms_A = local_UC_centered.m_A_cart_nopbc[i];
+			for (size_t j { }; j < 4; j++) {
+				const std::pair<Atom, Atom>& pristine_atoms_A = pristine_UC_init.m_A_cart_nopbc[j];
+				const std::pair<Atom, Atom>& local_atoms_A = local_UC_centered.m_A_cart_nopbc[j];
 
-				pos_upper_rot = grad_R*pristine_atoms_A.first.m_position;
-				pos_lower_rot = grad_R*pristine_atoms_A.second.m_position;
-				sum += local_atoms_A.first.m_position.dot(grad_R*pristine_atoms_A.first.m_position);
-				sum += local_atoms_A.second.m_position.dot(grad_R*pristine_atoms_A.second.m_position);
-				//sum += local_atoms_A.first.m_position.dot(grad_R*pristine_atoms_A.first.m_position);
-				//sum += local_atoms_A.second.m_position.dot(grad_R*pristine_atoms_A.second.m_position);
+				sum += local_atoms_A.first.m_position.dot(grad_R_i*pristine_atoms_A.first.m_position);
+				sum += local_atoms_A.second.m_position.dot(grad_R_i*pristine_atoms_A.second.m_position);
 			}
-
-			new_quaternion_coeff[j] = current_quaternion_coeff[j] + 2*step_size*sum;
+			g_coeff[i] = -2*sum/(3.905*3.905);
 		}
 
-		current_unit_quaternion = new_unit_quaternion.normalized();
+		return g;
+	};
+
+	auto lambda = [&](const Eigen::Quaterniond& q, const Eigen::Quaterniond& grad_L) { 
+		double a { (q.conjugate()*grad_L).w() };
+		double b { grad_L.squaredNorm() };
+		return (1 - cur_step_size*a - std::sqrt(std::pow(cur_step_size,2)*(std::pow(a,2) - b) + 1));
+	};
+
+	size_t counter { };
+	while (cur_iter++ < max_iter && diff_A > threshold) {
+		const Eigen::Quaterniond grad_L { g() };
+		const double lagrange_multiplier { lambda(current_unit_quaternion, grad_L) };
+
+		Eigen::Vector4d delta { cur_step_size*grad_L.coeffs() + lagrange_multiplier*current_unit_quaternion.coeffs() };
+		current_unit_quaternion.coeffs() -= delta;
+		current_unit_quaternion.normalize();
 		
 		double new_sq_dist { sq_dist(local_UC_centered - pristine_UC_init.getRotatedUC(current_unit_quaternion)) };
+
+		if (new_sq_dist > cur_sq_dist && counter++ < 5) {
+			cur_step_size /= 5;
+			continue;
+		}
+		else if (new_sq_dist > cur_sq_dist && counter >= 5) {
+			break;
+		}
 
 		diff_A = std::abs(new_sq_dist - cur_sq_dist);
 		cur_sq_dist = new_sq_dist;
@@ -1085,15 +1097,10 @@ inline void findInitialOrientation(LocalUC& local_UC, double step_size) {
 		}
 	};
 	// only Sr and O centered
-	const LocalUC pseudo_unit_cell_centered { [&]() {
-		LocalUC A_O_centered_cell { local_UC };
-		center(A_O_centered_cell.m_A_cart_nopbc);
-		center(A_O_centered_cell.m_O_cart_nopbc);
-		return A_O_centered_cell;
-	}() };
+	const LocalUC pseudo_unit_cell_centered { local_UC.getCenteredUC() };
 
 	std::tuple<Eigen::Quaterniond, short, UnitCell::Rotation> initial_orientation { { 1, 0, 0, 0 }, 0, UnitCell::Rotation::None };
-	Eigen::Quaterniond unit_quaternion = gradientDescent(unit_cell, local_UC, step_size, initial_orientation); // start from unrotated uc 
+	Eigen::Quaterniond unit_quaternion = gradientDescent(unit_cell, local_UC, initial_orientation, step_size); // start from unrotated uc 
 	std::pair<double, UnitCell> best_uc { std::numeric_limits<double>::infinity(), UnitCell() }; // dist front O and corresponding uc
 	
 
@@ -1442,15 +1449,16 @@ inline void calculateLocalObservables(std::vector<helper::LocalUC>& local_UCs, d
 	helper::UnitCell pristine_UC_sn { AtomType::Sr, AtomType::Ti, -1, { 1, 0, 0, 0 } }; // sigma -1 UC
 	
 	auto getUnitCellData = [&](helper::LocalUC& local_UC) {
+		helper::LocalUC local_UC_centered { local_UC.getCenteredUC() };
 		auto local_UC_initial = local_UC.getInitialOrientation().value();
-		Eigen::Quaterniond best_quaternion { helper::gradientDescent(pristine_UC_sp, local_UC, step_size, local_UC_initial) };
+		Eigen::Quaterniond best_quaternion { helper::gradientDescent(pristine_UC_sp, local_UC, local_UC_initial, step_size) };
 		std::tuple<Eigen::Quaterniond, short, helper::UnitCell::Rotation> orientation = std::make_tuple(best_quaternion, std::get<1>(local_UC_initial), std::get<2>(local_UC_initial));
 		local_UC.m_orientation = orientation;
 		//local_UC.updateInitialOrientation(orientation); // use orientation of last cell on same side as initial
 
 		Position front_O_sp { pristine_UC_sp.getRotatedUC(best_quaternion).m_O_cart_nopbc.at(0).first.m_position };
 		Position front_O_sn { pristine_UC_sn.getRotatedUC(best_quaternion).m_O_cart_nopbc.at(0).first.m_position };
-		Position local_UC_front_O { local_UC.m_O_cart_nopbc.at(0).first.m_position };
+		Position local_UC_front_O { local_UC_centered.m_O_cart_nopbc.at(0).first.m_position };
 
 		double displacement_sp { (front_O_sp - local_UC_front_O).squaredNorm() };
 		double displacement_sn { (front_O_sn - local_UC_front_O).squaredNorm() };
