@@ -16,21 +16,20 @@ int main() {
     auto O_NNs = getNearestNeighbors(atoms.m_O, atoms.m_B, 6, cell_matrix).value();
     auto B_NNs = getNearestNeighbors(atoms.m_B, atoms.m_B, 6, cell_matrix).value();
 
-    for (size_t i = 0; i < B_NNs.size(); ++i) {
-        std::println("reference index: {}", i);
-        for (size_t j = 0; j < B_NNs.at(i).size(); ++j) {
-            const auto& [nn_idx, d2] = B_NNs.at(i).at(j);
-            std::println("NN index: {}, distance to ref {}", nn_idx, std::sqrt(d2));
-        }
-        std::println("");
-    }
+    //for (size_t i = 0; i < B_NNs.size(); ++i) {
+    //    std::println("reference index: {}", i);
+    //    for (size_t j = 0; j < B_NNs.at(i).size(); ++j) {
+    //        const auto& [nn_idx, d2] = B_NNs.at(i).at(j);
+    //        std::println("NN index: {}, distance to ref {}", nn_idx, std::sqrt(d2));
+    //    }
+    //    std::println("");
+    //}
 
 	auto phase_factors = helper::findPhaseFactor(atoms.m_B, B_NNs);
 
 	auto local_UCs = createLocalUCs(atoms.m_A, atoms.m_B, atoms.m_O, A_NNs, O_NNs, phase_factors, PolCalc::DWType::HT, cell_matrix);
 
 	calculateLocalObservables(local_UCs, 0.005);
-
 	auto OP = calculateObservable(local_UCs, 0.25);
 	write("op.out", OP);
 }

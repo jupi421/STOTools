@@ -41,7 +41,7 @@ enum class Observable {
 	OP, Polarization
 };
 
-constexpr std::array<double, 3> ATOM_MASSES_U { 87.62, 47.867, 15.999 };
+constexpr std::array<double, 3> ATOM_MASSES_U { 87.62, 47.867, 15.999 }; // Sr, Ti, O; use a map when introducing more types
 
 struct Atom {
 	AtomType m_atom_type { AtomType::Unknown };
@@ -104,7 +104,7 @@ class UnitCell {
 	// tetragonal unit cell with COM at origin
 	public:
 	enum class Rotation {
-		right, left, None // std::ranges::rotate right or left
+		None=0, right, left  // std::ranges::rotate right or left
 	};
 	// A and O contain pairs of opposite atoms (wrt y axis) centered around origin
 	std::vector<std::pair<Atom, Atom>> m_A_cart_nopbc { };
@@ -114,7 +114,7 @@ class UnitCell {
 
 	private:
 	Eigen::Quaterniond m_orientation { 1, 0, 0, 0 };
-	short m_permutation_number { };
+	std::pair<short, Rotation> m_permutation_number { };
 
 	void applyRotationO(Atom& atom, double angle, const Vector& axis) {
 		// Rodriguez rotation
@@ -167,7 +167,7 @@ class UnitCell {
 	}
 
 	UnitCell(AtomType type_A, AtomType type_B, short O_rot_sign /* = +- 1*/, 
-		  const Eigen::Quaterniond& orientation, double rot_angle = 3, 
+		  const Eigen::Quaterniond& orientation, double rot_angle = 3*M_PI/180, 
 		  AtomType type_O = AtomType::O)
 		: m_orientation(orientation)
 	{
@@ -274,7 +274,7 @@ class UnitCell {
 			else {
 				std::ranges::rotate(pairs, pairs.end()-permutation_number);
 			}
-			m_permutation_number = permutation_number;
+			m_permutation_number = std::make_pair(permutation_number, permutation_direction);
 		};
 
 		m_A_cart_nopbc = rotate_points(m_A_cart_nopbc);
@@ -295,7 +295,7 @@ class UnitCell {
 		return m_orientation;
 	}
 
-	short getInitialPermutation() const {
+	std::pair<short, Rotation> getInitialPermutation() const {
 		return m_permutation_number;
 	}
 };
@@ -632,7 +632,12 @@ public:
 		}
 	}
 
-	std::expected<void, std::string> setInitialOrientation(const std::tuple<Eigen::Quaterniond, short, Rotation>& unit_quaternion) { 
+	std::pair<std::tuple<Eigen::Quaterniond, short, Rotation>, std::tuple<Eigen::Quaterniond, short, Rotation>> getInitialOrientations() const {
+		return std::make_pair(m_left_init_orientation.value(), m_right_init_orientation.value());
+	}
+
+	std::expected<void, std::string> setInitialOrientation(const std::tuple<Eigen::Quaterniond, short, Rotation>& orientation) { 
+		// orientation short: perm num, Rotation: perm dir, Quaternion: rotation of permuted unit cell
 		if (m_side == DWSide::center) {
 			return std::unexpected("Cell in DW center!"); 
 		}
@@ -641,8 +646,8 @@ public:
 			return std::unexpected("Initial Orientation already set!");
 		}
 
-		const Eigen::Quaterniond& quaternion { std::get<0>(unit_quaternion) };
-		const short permutation_number { std::get<1>(unit_quaternion) };
+		const Eigen::Quaterniond& quaternion { std::get<0>(orientation) };
+		const short permutation_number { std::get<1>(orientation) };
 
 		Eigen::Quaterniond rot_90_y { cos(M_PI/4), 0, sin(M_PI/4), 0 };
 		const double angle { [&]() {
@@ -665,41 +670,41 @@ public:
 
 		if (m_type == DWType::HT) {
 			if (m_side == DWSide::left) {
-				m_left_init_orientation = unit_quaternion;
+				m_left_init_orientation = orientation;
 				if (quadrant_2 || quadrant_4) {
-					m_right_init_orientation = std::make_tuple(rot_90_y*quaternion, get_permutation_number(permutation_number+1), Rotation::left);
+					m_right_init_orientation = std::make_tuple(quaternion*rot_90_y, get_permutation_number(permutation_number+1), Rotation::left);
 				}
 				else {
-					m_right_init_orientation = std::make_tuple(rot_90_y.conjugate()*quaternion, get_permutation_number(permutation_number-1), Rotation::right);
+					m_right_init_orientation = std::make_tuple(quaternion*rot_90_y.conjugate(), get_permutation_number(permutation_number-1), Rotation::right);
 				}
 			}
 			else {
-				m_right_init_orientation = unit_quaternion;
+				m_right_init_orientation = orientation;
 				if (quadrant_2 || quadrant_4) {
-					m_left_init_orientation = std::make_tuple(rot_90_y*quaternion, get_permutation_number(permutation_number+1), Rotation::left);
+					m_left_init_orientation = std::make_tuple(quaternion*rot_90_y, get_permutation_number(permutation_number+1), Rotation::left);
 				}
 				else {
-					m_left_init_orientation = std::make_tuple(rot_90_y.conjugate()*quaternion, get_permutation_number(permutation_number-1), Rotation::right);
+					m_left_init_orientation = std::make_tuple(quaternion*rot_90_y.conjugate(), get_permutation_number(permutation_number-1), Rotation::right);
 				}
 			}
 		}
 		else {
 			if (m_side == DWSide::left) {
-				m_left_init_orientation = unit_quaternion;
+				m_left_init_orientation = orientation;
 				if (quadrant_2 || quadrant_4) {
-					m_right_init_orientation = std::make_tuple(rot_90_y.conjugate()*quaternion, get_permutation_number(permutation_number-1), Rotation::right);
+					m_right_init_orientation = std::make_tuple(quaternion*rot_90_y.conjugate(), get_permutation_number(permutation_number-1), Rotation::right);
 				}
 				else {
-					m_right_init_orientation = std::make_tuple(rot_90_y*quaternion, get_permutation_number(permutation_number+1), Rotation::left);
+					m_right_init_orientation = std::make_tuple(quaternion*rot_90_y, get_permutation_number(permutation_number+1), Rotation::left);
 				}
 			}
 			else {
-				m_right_init_orientation = unit_quaternion;
+				m_right_init_orientation = orientation;
 				if (quadrant_2 || quadrant_4) {
-					m_left_init_orientation = std::make_tuple(rot_90_y.conjugate()*quaternion, get_permutation_number(permutation_number-1), Rotation::right);
+					m_left_init_orientation = std::make_tuple(quaternion*rot_90_y.conjugate(), get_permutation_number(permutation_number-1), Rotation::right);
 				}
 				else {
-					m_left_init_orientation = std::make_tuple(rot_90_y*quaternion, get_permutation_number(permutation_number+1), Rotation::left);
+					m_left_init_orientation = std::make_tuple(quaternion*rot_90_y, get_permutation_number(permutation_number+1), Rotation::left);
 				}
 			}
 		}
@@ -813,9 +818,9 @@ public:
 									   O_left_displacement_mass_weighted;
 
 		// fill OP, sequence z rot, x rot, y rot
-		double phi_1 { mass_weighted_displacements.dot(phonon_pol_z_rot) };
-		double phi_2 { mass_weighted_displacements.dot(phonon_pol_x_rot) };
-		double phi_3 { mass_weighted_displacements.dot(phonon_pol_y_rot) };
+		double phi_1 { mass_weighted_displacements.dot(phonon_pol_x_rot) };
+		double phi_2 { mass_weighted_displacements.dot(phonon_pol_y_rot) };
+		double phi_3 { mass_weighted_displacements.dot(phonon_pol_z_rot) };
 
 		Vector phi { phi_1, phi_2, phi_3 };
 		short phase_factor {getPhaseFactor()};
@@ -953,13 +958,10 @@ inline std::vector<LocalUC::PhaseFactor> findPhaseFactor(const Atoms& B, const s
 				queue.push_back(current_child_id);
 				phase_factors.at(current_child_id) = -1*phase_factors.at(current_parent_id);
 			}
-			std::println("{}, {}", current_child_id, phase_factors.at(current_child_id));
-			std::println("{}, {}", current_parent_id, phase_factors.at(current_parent_id));
 			if (phase_factors.at(current_child_id) == phase_factors.at(current_parent_id)) {
 				throw std::runtime_error("Neighboring cells have the same phase_factor!");
 			}
 		}
-		std::println("");
 	}
 
 	std::vector<LocalUC::PhaseFactor> out; out.reserve(B.size());
@@ -969,7 +971,7 @@ inline std::vector<LocalUC::PhaseFactor> findPhaseFactor(const Atoms& B, const s
 
 	return out;
 }
-
+size_t ID = 0;
 inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const LocalUC &local_UC, 
 										  const std::tuple<Eigen::Quaterniond, short, UnitCell::Rotation>& init_orientation, double step_size = 0.0005 ) {
 	constexpr double threshold { 1e-12 };
@@ -987,7 +989,7 @@ inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const Loc
 	Eigen::Quaterniond initial_quaternion { std::get<0>(init_orientation).normalized() };
 	Eigen::Quaterniond current_unit_quaternion { 1,0,0,0 };
 
-	UnitCell pristine_UC_init { pristine_UC.getRotatedUC(initial_quaternion, std::get<1>(init_orientation), std::get<2>(init_orientation))};
+	UnitCell pristine_UC_init { pristine_UC.getRotatedUC(initial_quaternion, std::get<1>(init_orientation), std::get<2>(init_orientation)) };
 	LocalUC local_UC_centered { local_UC.getCenteredUC() };
 
 	double cur_step_size { step_size };
@@ -1050,81 +1052,102 @@ inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const Loc
 		return g;
 	};
 
-	auto lambda = [&](const Eigen::Quaterniond& q, const Eigen::Quaterniond& grad_L) { 
+	auto lambda = [](const Eigen::Quaterniond& q, const Eigen::Quaterniond& grad_L, double cur_step_size) { 
 		double a { (q.conjugate()*grad_L).w() };
 		double b { grad_L.squaredNorm() };
 		return (1 - cur_step_size*a - std::sqrt(std::pow(cur_step_size,2)*(std::pow(a,2) - b) + 1));
 	};
 
+	auto line_search = [&sq_dist, &lambda, &local_UC_centered, &pristine_UC_init]
+		(double cur_sq_dist, const Eigen::Quaterniond& q, const Eigen::Quaterniond& grad_L, double step_size) {
+			Eigen::Quaterniond best_q { q };
+			double best_dist { cur_sq_dist };
+			for (size_t i { 0 }; i <= 100; i++) {
+				double new_step_size = std::pow(1.1, i) * step_size*0.01;
+				double new_lambda { lambda(q, grad_L, new_step_size) };
+				Eigen::Vector4d delta { new_step_size*grad_L.coeffs() + new_lambda*q.coeffs() };
+				// forward search
+				Eigen::Quaterniond new_q_f { q.coeffs() - delta };
+				Eigen::Quaterniond new_q_b { q.coeffs() + delta };
+				new_q_f.normalize();
+				new_q_b.normalize();
+
+				double new_sq_dist_f { sq_dist(local_UC_centered - pristine_UC_init.getRotatedUC(new_q_f)) };
+				double new_sq_dist_b { sq_dist(local_UC_centered - pristine_UC_init.getRotatedUC(new_q_b)) };
+
+				if (new_sq_dist_f < best_dist || new_sq_dist_b < best_dist) {
+					if (new_sq_dist_f <= new_sq_dist_b) {
+						best_q = new_q_f;
+						best_dist = new_sq_dist_f;
+					}
+					else {
+						best_q = new_q_b;
+						best_dist = new_sq_dist_b;
+					}
+				}
+			}
+			return std::make_pair(best_q, best_dist);
+	};
+
 	size_t counter { };
-	while (cur_iter++ < max_iter && diff_A > threshold) {
+	while(cur_iter++ < max_iter) {
 		const Eigen::Quaterniond grad_L { g() };
-		const double lagrange_multiplier { lambda(current_unit_quaternion, grad_L) };
 
-		Eigen::Vector4d delta { cur_step_size*grad_L.coeffs() + lagrange_multiplier*current_unit_quaternion.coeffs() };
-		current_unit_quaternion.coeffs() -= delta;
-		current_unit_quaternion.normalize();
-		
-		double new_sq_dist { sq_dist(local_UC_centered - pristine_UC_init.getRotatedUC(current_unit_quaternion)) };
+		auto [new_unit_quaternion, new_sq_dist] = line_search(cur_sq_dist, current_unit_quaternion, grad_L, cur_step_size);
 
-		if (new_sq_dist > cur_sq_dist && counter++ < 5) {
+		if (new_sq_dist >= cur_sq_dist && counter++ < 5) {
 			cur_step_size /= 5;
 			continue;
 		}
-		else if (new_sq_dist > cur_sq_dist && counter >= 5) {
+		else if (new_sq_dist >= cur_sq_dist && counter >= 5) {
 			break;
 		}
 
-		diff_A = std::abs(new_sq_dist - cur_sq_dist);
+		current_unit_quaternion = new_unit_quaternion;
 		cur_sq_dist = new_sq_dist;
 	}
+	std::println("UC id: {}, DW side {}, best sq dist: {}", ID++, local_UC.m_side == LocalUC::DWSide::left ? -1 : 1, cur_sq_dist);
 
 	return (current_unit_quaternion*initial_quaternion).normalized();
 }
 
 inline void findInitialOrientation(LocalUC& local_UC, double step_size) {
-	Eigen::Matrix3d rotation_matrix_90;
-	rotation_matrix_90 << 0, 0, 1,
-						  0, 1, 0,
-						 -1, 0, 0;
-
-	UnitCell unit_cell { AtomType::Sr, AtomType::Ti, +1, { 1, 0, 0, 0 } };
-
-	auto center = [&local_UC](std::vector<std::pair<Atom, Atom>>& atom_pairs) {
-		for (auto& pair : atom_pairs) {
-			pair.first.m_position -= local_UC.m_COM_cart_nopbc;
-			pair.second.m_position -= local_UC.m_COM_cart_nopbc;
-		}
-	};
-	// only Sr and O centered
 	const LocalUC pseudo_unit_cell_centered { local_UC.getCenteredUC() };
-
-	std::tuple<Eigen::Quaterniond, short, UnitCell::Rotation> initial_orientation { { 1, 0, 0, 0 }, 0, UnitCell::Rotation::None };
-	Eigen::Quaterniond unit_quaternion = gradientDescent(unit_cell, local_UC, initial_orientation, step_size); // start from unrotated uc 
-	std::pair<double, UnitCell> best_uc { std::numeric_limits<double>::infinity(), UnitCell() }; // dist front O and corresponding uc
 	
+	// vector with the 4 possible corner permutations, each corresponding to a pi/2 rotation of the local z axis around the y+ axis
+	const std::vector<UnitCell> pristine_UC_perm { []() {
+		std::vector<UnitCell> temp; temp.reserve(4);
+		UnitCell base { AtomType::Sr, AtomType::Ti, +1, { 1, 0, 0, 0 } };
+		for (size_t i { }; i < 4; i++) {
+			UnitCell base_rot { base.getRotatedUC( Eigen::Quaterniond( 1, 0, 0, 0 ), static_cast<short>(i), UnitCell::Rotation::left) };
+			temp.emplace_back(base_rot);
+		}
+		return temp;
+	}() };
 
+	std::tuple<double, Eigen::Quaterniond, size_t> best_uc { std::numeric_limits<double>::infinity(), Eigen::Quaterniond(1,0,0,0), 0 }; // dist front O and corresponding uc
 	short permutation_number {};
 	for (std::size_t i { }; i<4; i++) {
-		if (i>0) {
-			unit_cell = unit_cell.getRotatedUC(rotation_matrix_90, ++permutation_number, UnitCell::Rotation::left);
-		}
+		std::tuple<Eigen::Quaterniond, short, UnitCell::Rotation> initial_orientation { { 1, 0, 0, 0 }, 0, UnitCell::Rotation::None };
+		// fit each permuted pristine uc, get q, measure O front and pick best, don't rotate when already permuted
+		Eigen::Quaterniond unit_quaternion { gradientDescent(pristine_UC_perm.at(i), local_UC, initial_orientation, step_size) }; 
 
-		const Position& pristine_uc_top_O { (unit_cell.getRotatedUC(unit_quaternion)).m_O_cart_nopbc.at(0).first.m_position };
+		const UnitCell pristine_rot { pristine_UC_perm.at(i).getRotatedUC(unit_quaternion) };
+		const Position& pristine_uc_top_O { pristine_rot.m_O_cart_nopbc.at(0).first.m_position };
 		const Position& pseudo_unit_cell_uc_top_O { pseudo_unit_cell_centered.m_O_cart_nopbc.at(0).first.m_position };
 		double cur_top_O_sq_distance { (pristine_uc_top_O - pseudo_unit_cell_uc_top_O).squaredNorm() };
+
 		// update best distance
-		if (cur_top_O_sq_distance < best_uc.first) {
-			best_uc.first = cur_top_O_sq_distance;
-			best_uc.second = unit_cell;
+		if (cur_top_O_sq_distance < std::get<0>(best_uc)) {
+			std::get<0>(best_uc) = cur_top_O_sq_distance;
+			std::get<1>(best_uc) = unit_quaternion;
+			std::get<2>(best_uc) = i;
 		}
 	}
-	// calculate quaternion to find rotated coordinate system
-	Eigen::Quaterniond initial_quaternion { best_uc.second.getInitialOrientation() };
-	Eigen::Quaterniond best_orientation { unit_quaternion*initial_quaternion };
-	
-	short permutation_num = best_uc.second.getInitialPermutation();
-	std::tuple<Eigen::Quaterniond, short, UnitCell::Rotation> final_orientation = std::make_tuple(best_orientation, permutation_num, UnitCell::Rotation::left);
+
+	Eigen::Quaterniond unit_quaternion { std::get<1>(best_uc) };
+	std::pair<short, UnitCell::Rotation> permutation = pristine_UC_perm.at(std::get<2>(best_uc)).getInitialPermutation();
+	std::tuple<Eigen::Quaterniond, short, UnitCell::Rotation> final_orientation = std::make_tuple(unit_quaternion, permutation.first, permutation.second);
 	
 	std::expected<void, std::string> res = local_UC.setInitialOrientation(final_orientation);
 
@@ -1454,10 +1477,12 @@ inline void calculateLocalObservables(std::vector<helper::LocalUC>& local_UCs, d
 		Eigen::Quaterniond best_quaternion { helper::gradientDescent(pristine_UC_sp, local_UC, local_UC_initial, step_size) };
 		std::tuple<Eigen::Quaterniond, short, helper::UnitCell::Rotation> orientation = std::make_tuple(best_quaternion, std::get<1>(local_UC_initial), std::get<2>(local_UC_initial));
 		local_UC.m_orientation = orientation;
-		//local_UC.updateInitialOrientation(orientation); // use orientation of last cell on same side as initial
+		local_UC.updateInitialOrientation(orientation); // use orientation of last cell on same side as initial
 
-		Position front_O_sp { pristine_UC_sp.getRotatedUC(best_quaternion).m_O_cart_nopbc.at(0).first.m_position };
-		Position front_O_sn { pristine_UC_sn.getRotatedUC(best_quaternion).m_O_cart_nopbc.at(0).first.m_position };
+		helper::UnitCell pristine_UC_sp_rot { pristine_UC_sp.getRotatedUC(best_quaternion) };
+		helper::UnitCell pristine_UC_sn_rot { pristine_UC_sn.getRotatedUC(best_quaternion) };
+		Position front_O_sp { pristine_UC_sp_rot.m_O_cart_nopbc.at(0).first.m_position };
+		Position front_O_sn { pristine_UC_sn_rot.m_O_cart_nopbc.at(0).first.m_position };
 		Position local_UC_front_O { local_UC_centered.m_O_cart_nopbc.at(0).first.m_position };
 
 		double displacement_sp { (front_O_sp - local_UC_front_O).squaredNorm() };
