@@ -1,0 +1,26 @@
+A atoms min img rel to B, UC id: 0; atom id: 0, coords: 0.010000000000000009 -0.1250062556894876 0
+A atoms min img rel to B, UC id: 51; atom id: 0, coords: 0.010000000000000009 -0.1250062556894876 0
+
+A atoms min img rel to B, UC id: 0; atom id: 0, coords: 0 0.1250062556894876 -0.24622990623190244 XXX
+A atoms min img rel to B, UC id: 51; atom id: 0, coords: 0 0.1250062556894876 -0.2512566979226996 XXX
+
+A atoms min img rel to B, UC id: 0; atom id: 0, coords: 0 0.1250062556894876 0.2512566979226989
+A atoms min img rel to B, UC id: 51; atom id: 0, coords: 0 0.1250062556894876 0.251256697922699
+
+A atoms min img rel to B, UC id: 0; atom id: 0, coords: 0 -0.1250062556894876 0.2512566979226989
+A atoms min img rel to B, UC id: 51; atom id: 0, coords: 0 -0.1250062556894876 0.251256697922699
+
+A atoms min img rel to B, UC id: 0; atom id: 0, coords: 0 -0.1250062556894876 -0.24622990623190244 XXX
+A atoms min img rel to B, UC id: 51; atom id: 0, coords: 0 -0.1250062556894876 -0.2512566979226996 XXX
+
+A atoms min img rel to B, UC id: 0; atom id: 0, coords: -0.010000000000000064 0.1250062556894876 0
+A atoms min img rel to B, UC id: 51; atom id: 0, coords: -0.010000000000000064 0.1250062556894876 0
+
+A atoms min img rel to B, UC id: 0; atom id: 0, coords: -0.010000000000000064 -0.1250062556894876 0
+A atoms min img rel to B, UC id: 51; atom id: 0, coords: -0.010000000000000064 -0.1250062556894876 0
+
+A atoms min img rel to B, UC id: 0; atom id: 0, coords: 0.010000000000000009 0.1250062556894876 0
+A atoms min img rel to B, UC id: 51; atom id: 0, coords: 0.010000000000000009 0.1250062556894876 0
+
+COM_rel_to_B, UC id: 0, COM: -1.3877787807814457e-17 0 0.0012566979226991126
+COM_rel_to_B, UC id: 51, COM: -1.3877787807814457e-17 0 -1.5265566588595902e-16

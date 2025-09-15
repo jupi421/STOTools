@@ -3,7 +3,7 @@
 using namespace PolCalc;
 
 int main() {
-    auto poscar = readPOSCAR("./test/POSCAR2").value(); // or "POSCAR"
+    auto poscar = readPOSCAR("./test/POSCAR3").value(); // or "POSCAR"
     Positions positions_raw = poscar.m_positions_direct;
 
     // If you want to derive N_Sr/N_Ti/N_O from POSCAR instead of hardcoding:

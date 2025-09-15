@@ -18,6 +18,7 @@
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 
+size_t COUNTER = 0;
 // everything with right handed coordinate system looking along +y
 
 // TODO use openACC to parallelise on cpu or cuda
@@ -327,7 +328,8 @@ public:
 	using UnitCell::m_B_cart_nopbc;
 	using UnitCell::m_O_cart_nopbc;
 	using UnitCell::m_COM_cart_nopbc;
-	std::optional<Vector> m_local_OP;
+	std::optional<Vector> m_local_OP_local_frame;
+	std::optional<Vector> m_local_OP_global_frame;
 	std::optional<Vector> m_local_polarization;
 	using UnitCell::operator-;
 	using UnitCell::Rotation;
@@ -341,7 +343,7 @@ private:
 	Eigen::Matrix3d m_metric;
 
 	static Position minimumImage(const Position& pos) {
-		return (pos.array() - (pos.array() + 0.5).floor()).matrix();
+		return (pos.array() - (pos.array() + 0.5 - 1e-11).floor()).matrix();
 	}
 
 	static double wrapDirectCoordinates(double x) {
@@ -519,16 +521,27 @@ public:
 		}
 		
 		Atoms A_rel_to_B { 
-			[&A, &B](){
+			[&A, &B, this](){
 				Atoms temp { A };
+				size_t i {};
 				for (Atom& atom : temp){
+					std::println("Before minimum image, UC id: {}; atom id: {}, coords: {} {} {}", COUNTER, i, atom.m_position.x(), atom.m_position.y(), atom.m_position.z());
 					atom.m_position = minimumImage(atom.m_position - B.m_position);
+					std::println("After atoms min img rel to B, UC id: {}; atom id: {}, coords: {} {} {}", COUNTER, i, atom.m_position.x(), atom.m_position.y(), atom.m_position.z());
+					double dist = atom.m_position.dot(m_metric*atom.m_position);
+					std::println("After atoms min img rel to B, UC id: {}; atom id: {}, dist: {}", COUNTER, i, dist);
+
 				}
+				std::println("B pos: {} {} {}", B.m_position.x(),B.m_position.y(),B.m_position.z());
+				std::println();
+				COUNTER++;
 				return temp;
 			}()
 		};
 
 		Position COM_rel_to_B = helper::getCOM(A_rel_to_B);
+		//std::println("COM_rel_to_B, UC id: {}, COM: {} {} {}", COUNTER++, COM_rel_to_B.x(), COM_rel_to_B.y(), COM_rel_to_B.z());
+		//std::println();
 
 		setDomain(B.m_position + COM_rel_to_B, DW_center_x, tolerance);
 
@@ -593,36 +606,38 @@ public:
 		fill_direct_A(atoms_upper, atoms_lower);
 		
 		// sort O top, bottom, ....
-		Atoms O_B_centered { 
+		Atoms O_COM_centered { 
 			[&](){
 				Atoms temp { O };
 				for (Atom& atom : temp){
-					atom.m_position = minimumImage(atom.m_position - B.m_position);
+					atom.m_position = minimumImage(atom.m_position - (B.m_position + COM_rel_to_B));
 				}
 				return temp; 
 			}()
 		};
 
-		std::vector<std::pair<Atom, Atom>> O_B_centered_pairs { findOppositeO(O_B_centered) };
+		std::vector<std::pair<Atom, Atom>> O_B_centered_pairs { findOppositeO(O_COM_centered) };
 		// wrap O back to direct with pbc
-		wrapDirectCoordinates(O_B_centered_pairs, B.m_position);
+		wrapDirectCoordinates(O_B_centered_pairs, B.m_position + COM_rel_to_B);
 		m_O_direct_pbc = O_B_centered_pairs;
 		
 		// get cartesian coordinates without pbc
 		m_A_cart_nopbc.reserve(4);
 		m_O_cart_nopbc.reserve(3);
 
+		Atom ref_for_unwrap { B.m_atom_type, B.m_position + COM_rel_to_B };
 		auto fill_cart = [&](const auto& direct, auto& cart) {
 			for (const auto& pair : direct) {
-				Atom first { pair.first.m_atom_type, get_cart_pos_nowrap(pair.first, B, cell_matrix) };
-				Atom second { pair.second.m_atom_type, get_cart_pos_nowrap(pair.second, B, cell_matrix) };
+				Atom first  { pair.first.m_atom_type,  get_cart_pos_nowrap(pair.first,  ref_for_unwrap, cell_matrix) };
+				Atom second { pair.second.m_atom_type, get_cart_pos_nowrap(pair.second, ref_for_unwrap, cell_matrix) };
 				cart.emplace_back(std::move(first), std::move(second));
-			}; };
+			}
+		};
 
 		// save in cartesian without pbc
 		fill_cart(m_A_direct_pbc, m_A_cart_nopbc);
 		fill_cart(m_O_direct_pbc, m_O_cart_nopbc);
-		m_B_cart_nopbc = Atom(m_B_direct_pbc.m_atom_type, get_cart_pos_nowrap(B, B, cell_matrix));
+		m_B_cart_nopbc = Atom(m_B_direct_pbc.m_atom_type, get_cart_pos_nowrap(B, ref_for_unwrap, cell_matrix));
 		m_COM_cart_nopbc = convertCoordinates(B.m_position + COM_rel_to_B, cell_matrix);
 	}
 
@@ -785,16 +800,16 @@ public:
 		Vector ey_rot { unit_quaternion*ey };
 		Vector ez_rot { unit_quaternion*ez };
 		
-		Eigen::VectorXd phonon_pol_z_rot(15); // { 0, 0, 0,   0, 0, 0,   1, 0, 0,   0,  0, 0,   0, -1, 0 }
 		Eigen::VectorXd phonon_pol_x_rot(15); // { 0, 0, 0,   0, 0, 0,   0, 0, 1,   0, -1, 0,   0,  0, 0 }
 		Eigen::VectorXd phonon_pol_y_rot(15); // { 0, 0, 0,   0, 0, 0,   0, 0, 0,  -1,  0, 0,   0,  0, 1 }
+		Eigen::VectorXd phonon_pol_z_rot(15); // { 0, 0, 0,   0, 0, 0,   1, 0, 0,   0,  0, 0,   0, -1, 0 }
 
-		phonon_pol_z_rot << zeros, zeros, ex_rot, zeros, -ey_rot;
 		phonon_pol_x_rot << zeros, zeros, ez_rot, -ey_rot, zeros;
 		phonon_pol_y_rot << zeros, zeros, zeros, -ex_rot, ez_rot;
-		phonon_pol_z_rot.normalize();
+		phonon_pol_z_rot << zeros, zeros, ex_rot, zeros, -ey_rot;
 		phonon_pol_x_rot.normalize();
 		phonon_pol_y_rot.normalize();
+		phonon_pol_z_rot.normalize();
 
 
 		UnitCell reference_UC_rotated { UnitCell(AtomType::Sr, AtomType::Ti) };
@@ -820,7 +835,6 @@ public:
 									   O_bottom_displacement_mass_weighted,
 									   O_left_displacement_mass_weighted;
 
-		// fill OP, sequence z rot, x rot, y rot
 		double phi_1 { mass_weighted_displacements.dot(phonon_pol_x_rot) };
 		double phi_2 { mass_weighted_displacements.dot(phonon_pol_y_rot) };
 		double phi_3 { mass_weighted_displacements.dot(phonon_pol_z_rot) };
@@ -828,9 +842,16 @@ public:
 		Vector phi { phi_1, phi_2, phi_3 };
 		short phase_factor {getPhaseFactor()};
 
-		m_local_OP = phase_factor*phi;
+		Eigen::Matrix3d R;
+		R.col(0) = ex_rot;
+		R.col(1) = ey_rot;
+		R.col(2) = ez_rot;
+
+		m_local_OP_local_frame = phase_factor*phi;
+		m_local_OP_global_frame = phase_factor*(R.inverse()*phi);
 	}
 
+	//
 	inline void getLocalPolarization(/*, Tensor BEC*/);
 
 };
@@ -862,7 +883,7 @@ inline double getMinimumImageSqDistance(const Atom& atom1,
 						  const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt) {
 
 	Vector dr { atom2.m_position - atom1.m_position };
-	dr.array() -= dr.array().round();
+	dr.array() -= (dr.array() + 0.5 - 1e-12).floor();
 
 	return getSqDistance(dr, cell_matrix);
 }
@@ -1122,7 +1143,7 @@ inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const Loc
 	}
 
 	Position b_atom { local_UC.m_B_cart_nopbc.m_position };
-	std::println("UC id: {}; DW side: {}; B Atom coords: x={}, y={}, z={}; Quaternion: x={}, y={}, z={}, w={}; best sq dist: {}", ID++, side, b_atom.x(), b_atom.y(), b_atom.z(), temp.x(), temp.y(),temp.z(),temp.w(), cur_sq_dist);
+	//std::println("UC id: {}; DW side: {}; B Atom coords: x={}, y={}, z={}; Quaternion: x={}, y={}, z={}, w={}; best sq dist: {}", ID++, side, b_atom.x(), b_atom.y(), b_atom.z(), temp.x(), temp.y(),temp.z(),temp.w(), cur_sq_dist);
 
 	return (current_unit_quaternion*initial_quaternion).normalized();
 }
@@ -1426,7 +1447,7 @@ inline ObservableData calculateObservable(const std::vector<helper::LocalUC>& lo
 
 		std::pair<double, Vectors> current_bin;
 		double current_pos { local_UCs_cp.at(current_id).m_B_cart_nopbc.m_position.x() };
-		current_bin.second.emplace_back(local_UCs_cp.at(current_id).m_local_OP.value());
+		current_bin.second.emplace_back(local_UCs_cp.at(current_id).m_local_OP_global_frame.value());
 		*it_current = true;
 
 		double current_bin_center { current_pos };
@@ -1442,7 +1463,7 @@ inline ObservableData calculateObservable(const std::vector<helper::LocalUC>& lo
 				break; // because nothing after would fall into the bin anyway
 			}
 			
-			current_bin.second.emplace_back(local_UCs_cp.at(i).m_local_OP.value());
+			current_bin.second.emplace_back(local_UCs_cp.at(i).m_local_OP_global_frame.value());
 			used.at(i) = true;
 			current_bin_center += new_pos;
 		}
