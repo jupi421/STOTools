@@ -1121,7 +1121,8 @@ inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const Loc
 		side = "c";
 	}
 
-	std::println("UC id: {}; DW side: {}; Quaternion: x={}, y={}, z={}, w={}; best sq dist: {}", ID++, side, temp.x(), temp.y(),temp.z(),temp.w(), cur_sq_dist);
+	Position b_atom { local_UC.m_B_cart_nopbc.m_position };
+	std::println("UC id: {}; DW side: {}; B Atom coords: x={}, y={}, z={}; Quaternion: x={}, y={}, z={}, w={}; best sq dist: {}", ID++, side, b_atom.x(), b_atom.y(), b_atom.z(), temp.x(), temp.y(),temp.z(),temp.w(), cur_sq_dist);
 
 	return (current_unit_quaternion*initial_quaternion).normalized();
 }
