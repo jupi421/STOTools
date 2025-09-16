@@ -18,7 +18,6 @@
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 
-size_t COUNTER = 0;
 // everything with right handed coordinate system looking along +y
 
 // TODO use openACC to parallelise on cpu or cuda
@@ -114,6 +113,7 @@ class UnitCell {
 	Atom m_B_cart_nopbc { };
 	std::vector<std::pair<Atom, Atom>> m_O_cart_nopbc { };
 	Position m_COM_cart_nopbc { Position::Zero() };
+	double m_cell_volume {};
 
 	private:
 	Eigen::Quaterniond m_orientation { 1, 0, 0, 0 };
@@ -137,6 +137,8 @@ class UnitCell {
 
 		constexpr double a { 3.905 };
 		constexpr double c { a }; 
+
+		m_cell_volume = a*a*c;
 
 		Eigen::Vector3d ex = Eigen::Vector3d(1, 0, 0);
 		Eigen::Vector3d ey = Eigen::Vector3d(0, 1, 0);
@@ -178,6 +180,7 @@ class UnitCell {
 
 		constexpr double a { 3.905 };
 		constexpr double c { a }; 
+		m_cell_volume = a*a*c;
 
 		Eigen::Vector3d ex = Eigen::Vector3d(1, 0, 0);
 		Eigen::Vector3d ey = Eigen::Vector3d(0, 1, 0);
@@ -330,7 +333,8 @@ public:
 	using UnitCell::m_COM_cart_nopbc;
 	std::optional<Vector> m_local_OP_local_frame;
 	std::optional<Vector> m_local_OP_global_frame;
-	std::optional<Vector> m_local_polarization;
+	std::optional<Vector> m_local_polarization_local_frame;
+	std::optional<Vector> m_local_polarization_global_frame;
 	using UnitCell::operator-;
 	using UnitCell::Rotation;
 
@@ -525,23 +529,14 @@ public:
 				Atoms temp { A };
 				size_t i {};
 				for (Atom& atom : temp){
-					std::println("Before minimum image, UC id: {}; atom id: {}, coords: {} {} {}", COUNTER, i, atom.m_position.x(), atom.m_position.y(), atom.m_position.z());
 					atom.m_position = minimumImage(atom.m_position - B.m_position);
-					std::println("After atoms min img rel to B, UC id: {}; atom id: {}, coords: {} {} {}", COUNTER, i, atom.m_position.x(), atom.m_position.y(), atom.m_position.z());
-					double dist = atom.m_position.dot(m_metric*atom.m_position);
-					std::println("After atoms min img rel to B, UC id: {}; atom id: {}, dist: {}", COUNTER, i, dist);
 
 				}
-				std::println("B pos: {} {} {}", B.m_position.x(),B.m_position.y(),B.m_position.z());
-				std::println();
-				COUNTER++;
 				return temp;
 			}()
 		};
 
 		Position COM_rel_to_B = helper::getCOM(A_rel_to_B);
-		//std::println("COM_rel_to_B, UC id: {}, COM: {} {} {}", COUNTER++, COM_rel_to_B.x(), COM_rel_to_B.y(), COM_rel_to_B.z());
-		//std::println();
 
 		setDomain(B.m_position + COM_rel_to_B, DW_center_x, tolerance);
 
@@ -784,7 +779,7 @@ public:
 	}
 	
 
-	inline void calculateLocalOP() {
+	void calculateLocalOP() {
 		// pass uncentered unit cell
 		// centered at origin, ey into plane, sequence: Sr front lower left, Ti, O front, O bottom, O left
 		const Eigen::Quaterniond& unit_quaternion { std::get<0>(getOrientation().value()) };
@@ -851,8 +846,66 @@ public:
 		m_local_OP_global_frame = phase_factor*(R.inverse()*phi);
 	}
 
-	//
-	inline void getLocalPolarization(/*, Tensor BEC*/);
+	void calculateLocalPolarization(/*const Eigen::Matrix3d& BEC_Sr, const Eigen::Matrix3d& BEC_Ti, const Eigen::Matrix3d& BEC_O*/) {
+		const Eigen::Quaterniond& unit_quaternion { std::get<0>(getOrientation().value()) };
+		const Eigen::Matrix3d local_basis { unit_quaternion.toRotationMatrix() };
+		const short permutation_number { std::get<1>(getOrientation().value()) };
+		const UnitCell::Rotation permutation_direction { std::get<2>(getOrientation().value()) };
+
+		UnitCell reference_rotated { AtomType::Sr, AtomType::Ti };
+		reference_rotated.RotateUC(unit_quaternion, permutation_number, permutation_direction);
+		LocalUC local_UC_centered { getCenteredUC() };
+
+		double elementary_charge { 1.602176634e-19 };
+		Displacements displacements { local_UC_centered - reference_rotated };
+		double Z_Sr = 2.54, Z_Ti = 7.12, Z_Op = -5.66, Z_On = -2.0;
+
+
+		Eigen::Matrix3d BEC_Sr;
+		Eigen::Matrix3d BEC_Ti;
+		Eigen::Matrix3d BEC_Ox;
+		Eigen::Matrix3d BEC_Oy;
+		Eigen::Matrix3d BEC_Oz;
+
+		BEC_Sr << Z_Sr, 0, 0,
+			      0, Z_Sr, 0,
+			      0, 0, Z_Sr;
+
+		BEC_Ti << Z_Ti, 0, 0,
+			      0, Z_Ti, 0,
+			      0, 0, Z_Ti;
+
+		BEC_Ox << Z_Op, 0, 0,
+			      0, Z_On, 0,
+			      0, 0, Z_On;
+
+		BEC_Oy << Z_On, 0, 0,
+			      0, Z_Op, 0,
+			      0, 0, Z_On;
+
+		BEC_Oz << Z_On, 0, 0,
+			      0, Z_On, 0,
+			      0, 0, Z_Op;
+
+		Vector polarization { Vector::Zero() };
+		for (auto& [upper, lower] : displacements.m_A_displacements) {
+			polarization.array() += ((local_basis.transpose()*BEC_Sr*local_basis)*upper).array();
+			polarization.array() += ((local_basis.transpose()*BEC_Sr*local_basis)*lower).array();
+		}
+		polarization.array() += ((local_basis.transpose()*BEC_Ti*local_basis)*displacements.m_B_displacement).array();
+		polarization.array() += ((local_basis.transpose()*BEC_Oy*local_basis)*displacements.m_O_displacements.at(0).first).array();
+		polarization.array() += ((local_basis.transpose()*BEC_Oz*local_basis)*displacements.m_O_displacements.at(1).first).array();
+		polarization.array() += ((local_basis.transpose()*BEC_Ox*local_basis)*displacements.m_O_displacements.at(2).first).array();
+
+		polarization.array() += ((local_basis.transpose()*BEC_Oy*local_basis)*displacements.m_O_displacements.at(0).second).array();
+		polarization.array() += ((local_basis.transpose()*BEC_Oz*local_basis)*displacements.m_O_displacements.at(1).second).array();
+		polarization.array() += ((local_basis.transpose()*BEC_Ox*local_basis)*displacements.m_O_displacements.at(2).second).array();
+
+		polarization /= reference_rotated.m_cell_volume;
+
+		m_local_polarization_local_frame = polarization;
+		m_local_polarization_global_frame = unit_quaternion.conjugate()*polarization;
+	}
 
 };
 
@@ -995,7 +1048,7 @@ inline std::vector<LocalUC::PhaseFactor> findPhaseFactor(const Atoms& B, const s
 
 	return out;
 }
-size_t ID = 0;
+
 inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const LocalUC &local_UC, 
 										  const std::tuple<Eigen::Quaterniond, short, UnitCell::Rotation>& init_orientation, double step_size = 0.0005 ) {
 	constexpr double threshold { 1e-12 };
@@ -1143,7 +1196,6 @@ inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const Loc
 	}
 
 	Position b_atom { local_UC.m_B_cart_nopbc.m_position };
-	//std::println("UC id: {}; DW side: {}; B Atom coords: x={}, y={}, z={}; Quaternion: x={}, y={}, z={}, w={}; best sq dist: {}", ID++, side, b_atom.x(), b_atom.y(), b_atom.z(), temp.x(), temp.y(),temp.z(),temp.w(), cur_sq_dist);
 
 	return (current_unit_quaternion*initial_quaternion).normalized();
 }
@@ -1427,14 +1479,15 @@ inline std::vector<helper::LocalUC> createLocalUCs(const Atoms& A, const Atoms& 
 }
 
 
-inline ObservableData calculateObservable(const std::vector<helper::LocalUC>& local_UCs, double threshold = 0.25 /*in angstroem*/) { //different behavior for either P or OP
+inline std::pair<ObservableData, ObservableData> calculateObservable(const std::vector<helper::LocalUC>& local_UCs, double threshold = 0.25 /*in angstroem*/) { //different behavior for either P or OP
 	std::vector<helper::LocalUC> local_UCs_cp { local_UCs };
 	std::ranges::sort(local_UCs_cp, [](const auto& lhs, const auto& rhs) {
 		return lhs.m_B_cart_nopbc.m_position.x() < rhs.m_B_cart_nopbc.m_position.x();
 	});
 
 	std::vector<bool> used(local_UCs.size(), false);
-	std::vector<std::pair<double, Vectors>> bins; // storing x value (bins) and OP of the Local UC at that position
+	std::vector<std::pair<double, Vectors>> bins_OP; // storing x value (bins) and OP of the Local UC at that position
+	std::vector<std::pair<double, Vectors>> bins_polarization; // storing x value (bins) and Polarization of the Local UC at that position
 
 	// sorting bins
 	while (true) {
@@ -1445,9 +1498,11 @@ inline ObservableData calculateObservable(const std::vector<helper::LocalUC>& lo
 
 		size_t current_id { static_cast<size_t>(std::distance(used.begin(), it_current)) };
 
-		std::pair<double, Vectors> current_bin;
+		std::pair<double, Vectors> current_bin_OP;
+		std::pair<double, Vectors> current_bin_polarization;
 		double current_pos { local_UCs_cp.at(current_id).m_B_cart_nopbc.m_position.x() };
-		current_bin.second.emplace_back(local_UCs_cp.at(current_id).m_local_OP_global_frame.value());
+		current_bin_OP.second.emplace_back(local_UCs_cp.at(current_id).m_local_OP_global_frame.value());
+		current_bin_polarization.second.emplace_back(local_UCs_cp.at(current_id).m_local_polarization_global_frame.value()); 
 		*it_current = true;
 
 		double current_bin_center { current_pos };
@@ -1463,44 +1518,60 @@ inline ObservableData calculateObservable(const std::vector<helper::LocalUC>& lo
 				break; // because nothing after would fall into the bin anyway
 			}
 			
-			current_bin.second.emplace_back(local_UCs_cp.at(i).m_local_OP_global_frame.value());
+			current_bin_OP.second.emplace_back(local_UCs_cp.at(i).m_local_OP_global_frame.value());
+			current_bin_polarization.second.emplace_back(local_UCs_cp.at(i).m_local_polarization_global_frame.value());
 			used.at(i) = true;
 			current_bin_center += new_pos;
 		}
 
-		current_bin.first = current_bin_center / current_bin.second.size();
-		bins.emplace_back(current_bin);
+		current_bin_OP.first = current_bin_center / current_bin_OP.second.size();
+		current_bin_polarization.first = current_bin_center / current_bin_polarization.second.size();
+		bins_OP.emplace_back(current_bin_OP);
+		bins_polarization.emplace_back(current_bin_polarization);
 	}
 
-	ObservableData observable(bins.size());
-	for (auto& pair : bins) {
-		observable.m_bin_center.emplace_back(pair.first);
+	ObservableData observable_OP(bins_OP.size());
+	ObservableData observable_polarization(bins_OP.size());
+
+	for (auto&& [pair_OP, pair_polarization]: std::ranges::views::zip(bins_OP, bins_polarization)) {
+		observable_OP.m_bin_center.emplace_back(pair_OP.first);
+		observable_polarization.m_bin_center.emplace_back(pair_polarization.first);
 	}
 
 	// calculate average and variance
-	for (const auto& [bin_center, obs] : bins) {
-		Vector bin_avg { Vector::Zero() };
-		for (const auto& vec : obs) {
-			bin_avg += vec;	
+	auto avg = [&](const auto& bins, ObservableData& observable) {
+		for (const auto& [bin_center, obs] : bins) {
+			Vector bin_avg { Vector::Zero() };
+			for (const auto& vec : obs) {
+				bin_avg += vec;	
+			}
+			bin_avg /= obs.size();
+			observable.m_observable_average.emplace_back(std::move(bin_avg));
 		}
-		bin_avg /= obs.size();
-		observable.m_observable_average.emplace_back(std::move(bin_avg));
-	}
+	};
 	
-	for (const auto& [bin_data, avg] : std::ranges::views::zip(bins, observable.m_observable_average)) {
-		Vector bin_var { Vector::Zero() };
-		for (const auto& obs : bin_data.second) {
-			Vector diff { obs - avg };
-			bin_var += (diff.array() * diff.array()).matrix();
+	auto var = [&](const auto& bins, ObservableData& observable) {
+		for (const auto& [bin_data, avg] : std::ranges::views::zip(bins, observable.m_observable_average)) {
+			Vector bin_var { Vector::Zero() };
+			for (const auto& obs : bin_data.second) {
+				Vector diff { obs - avg };
+				bin_var += (diff.array() * diff.array()).matrix();
+			}
+			bin_var /= bin_data.second.size() - 1;
+			observable.m_observable_variance.emplace_back(std::move(bin_var));
 		}
-		bin_var /= bin_data.second.size() - 1;
-		observable.m_observable_variance.emplace_back(std::move(bin_var));
-	}
+	};
 
-	return observable;
-}
+	avg(bins_OP, observable_OP);
+	avg(bins_polarization, observable_polarization);
+	var(bins_OP, observable_OP);
+	var(bins_polarization, observable_polarization);
 
-inline void calculateLocalObservables(std::vector<helper::LocalUC>& local_UCs, double step_size) {
+	return std::make_pair(observable_OP, observable_polarization);
+
+};
+
+inline void calculateLocalObservables(std::vector<helper::LocalUC>& local_UCs, double step_size, bool OP = true, bool polarization = true) {
 	// write a custom find/set initial orientation function for APBs 
 	std::vector<size_t> DW_centers_init_ids; // containing all center DWs picked befor local z axis could be determined
 	DW_centers_init_ids.reserve(20);
@@ -1530,7 +1601,13 @@ inline void calculateLocalObservables(std::vector<helper::LocalUC>& local_UCs, d
 		local_UC.sortOs(best_quaternion);
 
 		// calculate OP and Polarization
-		local_UC.calculateLocalOP();
+		if (OP) {
+			local_UC.calculateLocalOP();
+		}
+
+		if (polarization) {
+			local_UC.calculateLocalPolarization();
+		}
 	};
 
 	bool is_first { true };
