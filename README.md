@@ -10,4 +10,4 @@ cd STOTools
 cmake -S . -B build -G "Ninja Multi-Config"
 cmake --build build --config Release 
 ```
-Use Debug instead of Release to include debug symbols and optimization O0.
+Use "Debug" instead of "Release" to include debug symbols and optimization O0.
