@@ -3,13 +3,12 @@
 using namespace PolCalc;
 
 int main() {
-    auto xdatcar = readXDATCAR("./test/XDATCAR").value().at(0); // or "POSCAR"
-	auto poscar = xdatcar.data;
+    auto poscar = readPOSCAR("./test/POSCAR3").value(); // or "POSCAR"
     Positions positions_raw = poscar.m_positions_direct;
 
     // If you want to derive N_Sr/N_Ti/N_O from POSCAR instead of hardcoding:
-    size_t N_Sr = poscar.m_counts.at(0), N_Ti = poscar.m_counts.at(1), N_O = poscar.m_counts.at(2);
-    auto atoms = sortPositionsByType(positions_raw, N_Sr, N_Ti, N_O).value();
+    // size_t N_Sr = poscar.m_counts.at(0), N_Ti = poscar.m_counts.at(1), N_O = poscar.m_counts.at(2);
+    auto atoms = sortPositionsByType(positions_raw, 800, 800, 2400).value();
 
     Eigen::Matrix3d cell_matrix = poscar.m_cell; // <- critical
 
