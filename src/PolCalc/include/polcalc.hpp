@@ -17,6 +17,7 @@
 #include <cmath>
 #include <Eigen/Core>
 #include <Eigen/Geometry>
+#include <numeric>
 
 // everything with right handed coordinate system looking along +y
 
@@ -131,12 +132,12 @@ public:
 		m_O_cart_nopbc.reserve(3);
 	}
 
-	UnitCell(AtomType type_A, AtomType type_B) {
+	UnitCell(AtomType type_A, AtomType type_B, double lattice_const = 3.905) {
 		m_A_cart_nopbc.reserve(4);
 		m_O_cart_nopbc.reserve(3);
 
-		constexpr double a { 3.905 };
-		constexpr double c { a }; 
+		const double a { lattice_const };
+		const double c { a }; 
 
 		m_cell_volume = a*a*c;
 
@@ -172,14 +173,14 @@ public:
 
 	UnitCell(AtomType type_A, AtomType type_B, short O_rot_sign /* = +- 1*/, 
 		  const Eigen::Quaterniond& orientation, double rot_angle = 3*M_PI/180, 
-		  AtomType type_O = AtomType::O)
+		  double lattice_const = 3.905, AtomType type_O = AtomType::O)
 	: m_orientation(orientation)
 	{
 		m_A_cart_nopbc.reserve(4);
 		m_O_cart_nopbc.reserve(3);
 
-		constexpr double a { 3.905 };
-		constexpr double c { a }; 
+		const double a { lattice_const };
+		const double c { a }; 
 		m_cell_volume = a*a*c;
 
 		Eigen::Vector3d ex = Eigen::Vector3d(1, 0, 0);
@@ -331,6 +332,8 @@ public:
 	using UnitCell::m_B_cart_nopbc;
 	using UnitCell::m_O_cart_nopbc;
 	using UnitCell::m_COM_cart_nopbc;
+
+	double m_local_lattic_constant;
 	std::optional<Vector> m_local_OP_local_frame;
 	std::optional<Vector> m_local_OP_global_frame;
 	std::optional<Vector> m_local_polarization_local_frame;
@@ -343,8 +346,10 @@ public:
 private:
 	static inline std::optional<std::tuple<Eigen::Quaterniond, short, Rotation>> m_right_init_orientation;
 	static inline std::optional<std::tuple<Eigen::Quaterniond, short, Rotation>> m_left_init_orientation;
+	static inline std::optional<double> m_global_lattic_constant;
 	std::optional<PhaseFactor> m_phase_factor;
 	Eigen::Matrix3d m_metric;
+
 
 	static Position minimumImage(const Position& pos) {
 		return (pos.array() - (pos.array() + 0.5 - 1e-11).floor()).matrix();
@@ -575,6 +580,12 @@ private:
 	}
 
 public:
+	friend void calculateLatticeConstant(std::vector<LocalUC>& local_UCs);
+
+	double getLatticeConstant() const {
+		return m_global_lattic_constant.value();
+	}
+
 	std::expected<std::tuple<Eigen::Quaterniond, short, Rotation>, std::string> getInitialOrientation() const {
 		if (!m_left_init_orientation || !m_right_init_orientation) {
 			return std::unexpected("Initial rotation not set!");
@@ -685,6 +696,28 @@ public:
 		fill_cart(m_A_direct_pbc, m_A_cart_nopbc);
 		fill_cart(m_O_direct_pbc, m_O_cart_nopbc);
 		m_B_cart_nopbc = Atom(m_B_direct_pbc.m_atom_type, get_cart_pos_nowrap(B, ref_for_unwrap, cell_matrix));
+
+		// avg lattice constant
+		const Atoms m_A_cart_nopbc_flattened { [&]() {
+			Atoms temp; temp.reserve(8);
+			for (auto& [upper, lower] : m_A_cart_nopbc) {
+				temp.emplace_back(upper);
+				temp.emplace_back(lower);
+			}
+			return temp;
+		}() };
+
+		std::vector<double> lattice_dist;
+		lattice_dist.reserve(6);
+
+		for (size_t i {}; i < m_A_cart_nopbc_flattened.size(); i++) {
+			for (size_t j {}; j < i; j++) {
+				double dist { (m_A_cart_nopbc_flattened.at(i).m_position - m_A_cart_nopbc_flattened.at(j).m_position).norm() };
+				lattice_dist.push_back(dist);
+			}
+		}
+
+		m_local_lattic_constant = std::accumulate(lattice_dist.begin(), lattice_dist.end(), 0.0) / lattice_dist.size();
 	}
 
 	void updateInitialOrientation(const std::tuple<Eigen::Quaterniond, short, Rotation>& orientation) {
@@ -727,7 +760,6 @@ public:
 			return angle < 0 ? angle+2*M_PI : angle; // get the angle of rotated z axis around y axis
 		}() };
 
-		// for APBs take into account that z axis remains unchanged, this function is wrong then
 		// local quadrant
 		bool quadrant_2 { M_PI/2 < angle && angle < M_PI };
 		bool quadrant_4 { 3*M_PI/2 < angle && angle < 2*M_PI };
@@ -853,11 +885,11 @@ public:
 		Vector ey_rot { unit_quaternion*ey };
 		Vector ez_rot { unit_quaternion*ez };
 
-		Eigen::VectorXd phonon_pol_x_rot(15); // { 0, 0, 0,   0, 0, 0,   0, 0, 1,   0, -1, 0,   0,  0, 0 }
-		Eigen::VectorXd phonon_pol_y_rot(15); // { 0, 0, 0,   0, 0, 0,   0, 0, 0,  -1,  0, 0,   0,  0, 1 }
-		Eigen::VectorXd phonon_pol_z_rot(15); // { 0, 0, 0,   0, 0, 0,   1, 0, 0,   0,  0, 0,   0, -1, 0 }
+		Eigen::VectorXd phonon_pol_x_rot(15); // { 0, 0, 0,   0, 0, 0,   0, 0, -1,   0, 1, 0,   0,  0, 0 }
+		Eigen::VectorXd phonon_pol_y_rot(15); // { 0, 0, 0,   0, 0, 0,   0, 0,  0,  -1, 0, 0,   0,  0, 1 }
+		Eigen::VectorXd phonon_pol_z_rot(15); // { 0, 0, 0,   0, 0, 0,   1, 0,  0,   0, 0, 0,   0, -1, 0 }
 
-		phonon_pol_x_rot << zeros, zeros, ez_rot, -ey_rot, zeros;
+		phonon_pol_x_rot << zeros, zeros, -ez_rot, ey_rot, zeros;
 		phonon_pol_y_rot << zeros, zeros, zeros, -ex_rot, ez_rot;
 		phonon_pol_z_rot << zeros, zeros, ex_rot, zeros, -ey_rot;
 		phonon_pol_x_rot.normalize();
@@ -865,7 +897,7 @@ public:
 		phonon_pol_z_rot.normalize();
 
 
-		UnitCell reference_UC_rotated { UnitCell(AtomType::Sr, AtomType::Ti) };
+		UnitCell reference_UC_rotated { UnitCell(AtomType::Sr, AtomType::Ti, m_global_lattic_constant.value()) };
 		reference_UC_rotated.RotateUC(unit_quaternion, permutation_number, permutation_direction);
 		LocalUC local_UC_centered { getCenteredUC() };
 
@@ -895,13 +927,8 @@ public:
 		Vector phi { phi_1, phi_2, phi_3 };
 		short phase_factor {getPhaseFactor()};
 
-		Eigen::Matrix3d R;
-		R.col(0) = ex_rot;
-		R.col(1) = ey_rot;
-		R.col(2) = ez_rot;
-
-		m_local_OP_local_frame = phase_factor*phi;
-		m_local_OP_global_frame = phase_factor*(R.inverse()*phi);
+		m_local_OP_global_frame = phase_factor*phi;
+		m_local_OP_local_frame = unit_quaternion.conjugate()*m_local_OP_global_frame.value();
 	}
 
 	void calculateLocalPolarization(/*const Eigen::Matrix3d& BEC_Sr, const Eigen::Matrix3d& BEC_Ti, const Eigen::Matrix3d& BEC_O*/) {
@@ -909,7 +936,7 @@ public:
 		const short permutation_number { std::get<1>(getOrientation().value()) };
 		const UnitCell::Rotation permutation_direction { std::get<2>(getOrientation().value()) };
 
-		UnitCell reference_rotated { AtomType::Sr, AtomType::Ti };
+		UnitCell reference_rotated { AtomType::Sr, AtomType::Ti, m_global_lattic_constant.value()};
 		reference_rotated.RotateUC(unit_quaternion, permutation_number, permutation_direction);
 		LocalUC local_UC_centered { getCenteredUC() };
 
@@ -976,6 +1003,15 @@ public:
 	}
 
 };
+
+inline void calculateLatticeConstant(std::vector<LocalUC>& local_UCs) {
+	double sum = std::accumulate(local_UCs.begin(), local_UCs.end(), 0.0, [](double acc, const LocalUC& local_UC) {
+		return acc + local_UC.m_local_lattic_constant;
+	});
+	
+	local_UCs.at(0).m_global_lattic_constant = sum/local_UCs.size();
+}
+
 
 inline double getSqDistance(const Vector& r, const std::optional<Eigen::Matrix3d>& cell_matrix = std::nullopt) {
 	if (!cell_matrix) {
@@ -1104,7 +1140,8 @@ inline std::vector<LocalUC::PhaseFactor> findPhaseFactor(const Atoms& B, const s
 				phase_factors.at(current_child_id) = -1*phase_factors.at(current_parent_id);
 			}
 			if (phase_factors.at(current_child_id) == phase_factors.at(current_parent_id)) {
-				throw std::runtime_error("Neighboring cells have the same phase_factor!");
+				continue; // exchange the continue with a new NN search without pbc first, store phase factor and b atom as pair, then full NN search and use that then to make the uc but with the phase factor in the pair 
+				//throw std::runtime_error("Neighboring cells have the same phase_factor!");
 			}
 		}
 	}
@@ -1207,8 +1244,9 @@ inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const Loc
 		(double cur_sq_dist, const Eigen::Quaterniond& q, const Eigen::Quaterniond& grad_L, double step_size) {
 			Eigen::Quaterniond best_q { q };
 			double best_dist { cur_sq_dist };
+			double cur_step_size { step_size*0.01 };
 			for (size_t i { 0 }; i <= 100; i++) {
-				double new_step_size = std::pow(1.1, i) * step_size*0.01;
+				double new_step_size = std::pow(1.1, i) * cur_step_size;
 				double new_lambda { lambda(q, grad_L, new_step_size) };
 				Eigen::Vector4d delta { new_step_size*grad_L.coeffs() + new_lambda*q.coeffs() };
 				// forward search
@@ -1252,6 +1290,8 @@ inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const Loc
 		cur_sq_dist = new_sq_dist;
 	}
 
+	std::cout << "Quaternion " << current_unit_quaternion << std::endl;
+	std::println("{}", cur_sq_dist);
 	return (current_unit_quaternion*initial_quaternion).normalized();
 }
 
@@ -1259,9 +1299,9 @@ inline void findInitialOrientation(LocalUC& local_UC, double step_size) {
 	const LocalUC pseudo_unit_cell_centered { local_UC.getCenteredUC() };
 
 	// vector with the 4 possible corner permutations, each corresponding to a pi/2 rotation of the local z axis around the y+ axis
-	const std::vector<UnitCell> pristine_UC_perm { []() {
+	const std::vector<UnitCell> pristine_UC_perm { [&local_UC]() {
 		std::vector<UnitCell> temp; temp.reserve(4);
-		UnitCell base { AtomType::Sr, AtomType::Ti, +1, { 1, 0, 0, 0 } };
+		UnitCell base { AtomType::Sr, AtomType::Ti, +1, { 1, 0, 0, 0 }, local_UC.getLatticeConstant() };
 		for (size_t i { }; i < 4; i++) {
 			UnitCell base_rot { base.getRotatedUC( Eigen::Quaterniond( 1, 0, 0, 0 ), static_cast<short>(i), UnitCell::Rotation::left) };
 			temp.emplace_back(base_rot);
@@ -1743,6 +1783,9 @@ inline std::vector<helper::LocalUC> createLocalUCs(const Atoms& A, const Atoms& 
 
 		local_UCs.emplace_back(std::move(A_local), std::move(B_local), std::move(O_local), phase_factor, DW_type, cell_matrix);
 	}
+
+	calculateLatticeConstant(local_UCs);
+
 	return local_UCs;
 }
 
@@ -1844,8 +1887,8 @@ inline void calculateLocalObservables(std::vector<helper::LocalUC>& local_UCs, d
 	std::vector<size_t> DW_centers_init_ids; // containing all center DWs picked befor local z axis could be determined
 	DW_centers_init_ids.reserve(20);
 
-	helper::UnitCell pristine_UC_sp { AtomType::Sr, AtomType::Ti, 1, { 1, 0, 0, 0 } }; // sigma +1 UC
-	helper::UnitCell pristine_UC_sn { AtomType::Sr, AtomType::Ti, -1, { 1, 0, 0, 0 } }; // sigma -1 UC
+	helper::UnitCell pristine_UC_sp { AtomType::Sr, AtomType::Ti, 1, { 1, 0, 0, 0 }, local_UCs.at(0).getLatticeConstant() }; // sigma +1 UC
+	helper::UnitCell pristine_UC_sn { AtomType::Sr, AtomType::Ti, -1, { 1, 0, 0, 0 }, local_UCs.at(0).getLatticeConstant() }; // sigma -1 UC
 
 	auto getUnitCellData = [&](helper::LocalUC& local_UC) {
 		helper::LocalUC local_UC_centered { local_UC.getCenteredUC() };

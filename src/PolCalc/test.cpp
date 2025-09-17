@@ -28,7 +28,7 @@ int main() {
 
 	auto phase_factors = helper::findPhaseFactor(atoms.m_B, B_NNs);
 
-	auto local_UCs = createLocalUCs(atoms.m_A, atoms.m_B, atoms.m_O, A_NNs, O_NNs, phase_factors, PolCalc::DWType::HT, cell_matrix);
+	auto local_UCs = createLocalUCs(atoms.m_A, atoms.m_B, atoms.m_O, A_NNs, O_NNs, phase_factors, PolCalc::DWType::APB, cell_matrix);
 
 	calculateLocalObservables(local_UCs, 0.005);
 	auto obs = calculateObservable(local_UCs, 0.25);
