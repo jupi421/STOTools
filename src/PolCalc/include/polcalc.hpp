@@ -335,7 +335,7 @@ public:
 	using UnitCell::m_O_cart_nopbc;
 	using UnitCell::m_COM_cart_nopbc;
 
-	double m_local_lattic_constant;
+	double m_local_lattice_constant;
 	std::optional<Vector> m_local_OP_local_frame;
 	std::optional<Vector> m_local_OP_global_frame;
 	std::optional<Vector> m_local_polarization_local_frame;
@@ -709,17 +709,22 @@ public:
 			return temp;
 		}() };
 
-		std::vector<double> lattice_dist;
-		lattice_dist.reserve(6);
+		std::vector<double> lattice_dists;
+		lattice_dists.reserve(12);
 
-		for (size_t i {}; i < m_A_cart_nopbc_flattened.size(); i++) {
-			for (size_t j {}; j < i; j++) {
-				double dist { (m_A_cart_nopbc_flattened.at(i).m_position - m_A_cart_nopbc_flattened.at(j).m_position).norm() };
-				lattice_dist.push_back(dist);
-			}
+		for (size_t i {}; i < m_A_cart_nopbc.size(); i++) {
+			double dist;
+			size_t j { (i+1)%m_A_cart_nopbc.size() };
+
+			dist = (m_A_cart_nopbc.at(i).first.m_position - m_A_cart_nopbc.at(j).first.m_position).norm();
+			lattice_dists.push_back(dist);
+			dist = (m_A_cart_nopbc.at(i).second.m_position - m_A_cart_nopbc.at(j).second.m_position).norm();
+			lattice_dists.push_back(dist);
+			dist = (m_A_cart_nopbc.at(i).second.m_position - m_A_cart_nopbc.at(j).second.m_position).norm();
+			lattice_dists.push_back(dist);
 		}
 
-		m_local_lattic_constant = std::accumulate(lattice_dist.begin(), lattice_dist.end(), 0.0) / lattice_dist.size();
+		m_local_lattice_constant = std::accumulate(lattice_dists.begin(), lattice_dists.end(), 0.0) / lattice_dists.size();
 	}
 
 	void updateInitialOrientation(const std::tuple<Eigen::Quaterniond, short, Rotation>& orientation) {
@@ -949,10 +954,9 @@ public:
 				second = unit_quaternion.conjugate()*second;
 			}
 		};
-		Displacements displacements_ { local_UC_centered - reference_rotated };
 
 		rotate_displacements(displacements.m_A_displacements);
-		displacements.m_B_displacement = unit_quaternion*displacements.m_B_displacement;
+		displacements.m_B_displacement = unit_quaternion.conjugate()*displacements.m_B_displacement;
 		rotate_displacements(displacements.m_O_displacements);
 
 		double Z_Sr = 2.54, Z_Ti = 7.12, Z_Op = -5.66, Z_On = -2.0;
@@ -985,10 +989,10 @@ public:
 
 		Vector polarization { Vector::Zero() };
 
-		std::println("localUC Oy coords {} {} {}, Oz coords {} {} {}, Ox coords {} {} {}, quaternion: w={} x={} y={} z={}", local_UC_centered.m_O_cart_nopbc.at(0).first.m_position.x(), local_UC_centered.m_O_cart_nopbc.at(0).first.m_position.y(), local_UC_centered.m_O_cart_nopbc.at(0).first.m_position.z(),
-			   local_UC_centered.m_O_cart_nopbc.at(1).first.m_position.x(), local_UC_centered.m_O_cart_nopbc.at(1).first.m_position.y(), local_UC_centered.m_O_cart_nopbc.at(1).first.m_position.z(), local_UC_centered.m_O_cart_nopbc.at(2).first.m_position.x(), local_UC_centered.m_O_cart_nopbc.at(2).first.m_position.y(), local_UC_centered.m_O_cart_nopbc.at(2).first.m_position.z(),
-			   unit_quaternion.x(), unit_quaternion.y(), unit_quaternion.z(), unit_quaternion.w());
-		std::println();
+		//std::println("localUC Oy coords {} {} {}, Oz coords {} {} {}, Ox coords {} {} {}, quaternion: w={} x={} y={} z={}", local_UC_centered.m_O_cart_nopbc.at(0).first.m_position.x(), local_UC_centered.m_O_cart_nopbc.at(0).first.m_position.y(), local_UC_centered.m_O_cart_nopbc.at(0).first.m_position.z(),
+		//	   local_UC_centered.m_O_cart_nopbc.at(1).first.m_position.x(), local_UC_centered.m_O_cart_nopbc.at(1).first.m_position.y(), local_UC_centered.m_O_cart_nopbc.at(1).first.m_position.z(), local_UC_centered.m_O_cart_nopbc.at(2).first.m_position.x(), local_UC_centered.m_O_cart_nopbc.at(2).first.m_position.y(), local_UC_centered.m_O_cart_nopbc.at(2).first.m_position.z(),
+		//	   unit_quaternion.x(), unit_quaternion.y(), unit_quaternion.z(), unit_quaternion.w());
+		//std::println();
 
 		polarization.array() += (BEC_Sr*displacements.m_A_displacements.at(0).first).array();
 		polarization.array() += (BEC_Ti*displacements.m_B_displacement).array();
@@ -999,14 +1003,14 @@ public:
 		polarization /= reference_rotated.m_cell_volume;
 
 		m_local_polarization_local_frame = polarization;
-		m_local_polarization_global_frame = unit_quaternion.conjugate()*polarization;
+		m_local_polarization_global_frame = unit_quaternion*polarization;
 	}
 
 };
 
 inline void calculateLatticeConstant(std::vector<LocalUC>& local_UCs) {
 	double sum = std::accumulate(local_UCs.begin(), local_UCs.end(), 0.0, [](double acc, const LocalUC& local_UC) {
-		return acc + local_UC.m_local_lattic_constant;
+		return acc + local_UC.m_local_lattice_constant;
 	});
 	
 	local_UCs.at(0).m_global_lattice_constant = sum/local_UCs.size();
