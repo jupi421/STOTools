@@ -94,7 +94,8 @@ struct ObservableData {
 std::expected<std::vector<NNIds>, std::string> getNearestNeighbors(const Atoms& atoms, 
 																   const Atoms& reference_atoms,
 																   const size_t n, 
-																   const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt);
+																   const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt,
+																   const bool wrap = true);
 
 
 namespace helper {
@@ -240,6 +241,7 @@ public:
 			return out;
 		};
 
+
 		Displacements displacements { };
 		displacements.m_A_displacements.reserve(m_A_cart_nopbc.size());
 		displacements.m_O_displacements.reserve(m_O_cart_nopbc.size());
@@ -346,7 +348,7 @@ public:
 private:
 	static inline std::optional<std::tuple<Eigen::Quaterniond, short, Rotation>> m_right_init_orientation;
 	static inline std::optional<std::tuple<Eigen::Quaterniond, short, Rotation>> m_left_init_orientation;
-	static inline std::optional<double> m_global_lattic_constant;
+	static inline std::optional<double> m_global_lattice_constant;
 	std::optional<PhaseFactor> m_phase_factor;
 	Eigen::Matrix3d m_metric;
 
@@ -583,7 +585,7 @@ public:
 	friend void calculateLatticeConstant(std::vector<LocalUC>& local_UCs);
 
 	double getLatticeConstant() const {
-		return m_global_lattic_constant.value();
+		return m_global_lattice_constant.value();
 	}
 
 	std::expected<std::tuple<Eigen::Quaterniond, short, Rotation>, std::string> getInitialOrientation() const {
@@ -881,32 +883,30 @@ public:
 		Vector ey { 0, 1, 0 };
 		Vector ez { 0, 0, 1 };
 
-		Vector ex_rot { unit_quaternion*ex };
-		Vector ey_rot { unit_quaternion*ey };
-		Vector ez_rot { unit_quaternion*ez };
+		Eigen::VectorXd phonon_pol_x(15); // { 0, 0, 0,   0, 0, 0,   0, 0, -1,   0, 1, 0,   0,  0, 0 }
+		Eigen::VectorXd phonon_pol_y(15); // { 0, 0, 0,   0, 0, 0,   0, 0,  0,  -1, 0, 0,   0,  0, 1 }
+		Eigen::VectorXd phonon_pol_z(15); // { 0, 0, 0,   0, 0, 0,   1, 0,  0,   0, 0, 0,   0, -1, 0 }
 
-		Eigen::VectorXd phonon_pol_x_rot(15); // { 0, 0, 0,   0, 0, 0,   0, 0, -1,   0, 1, 0,   0,  0, 0 }
-		Eigen::VectorXd phonon_pol_y_rot(15); // { 0, 0, 0,   0, 0, 0,   0, 0,  0,  -1, 0, 0,   0,  0, 1 }
-		Eigen::VectorXd phonon_pol_z_rot(15); // { 0, 0, 0,   0, 0, 0,   1, 0,  0,   0, 0, 0,   0, -1, 0 }
+		phonon_pol_x << zeros, zeros, -ez, ey, zeros;
+		phonon_pol_y << zeros, zeros, zeros, -ex, ez;
+		phonon_pol_z << zeros, zeros, ex, zeros, -ey;
 
-		phonon_pol_x_rot << zeros, zeros, -ez_rot, ey_rot, zeros;
-		phonon_pol_y_rot << zeros, zeros, zeros, -ex_rot, ez_rot;
-		phonon_pol_z_rot << zeros, zeros, ex_rot, zeros, -ey_rot;
-		phonon_pol_x_rot.normalize();
-		phonon_pol_y_rot.normalize();
-		phonon_pol_z_rot.normalize();
+		phonon_pol_x *= std::sqrt(1.0/2.0); //.normalize();
+		phonon_pol_y *= std::sqrt(1.0/2.0); //.normalize();
+		phonon_pol_z *= std::sqrt(1.0/2.0); //.normalize();
 
-
-		UnitCell reference_UC_rotated { UnitCell(AtomType::Sr, AtomType::Ti, m_global_lattic_constant.value()) };
-		reference_UC_rotated.RotateUC(unit_quaternion, permutation_number, permutation_direction);
+		// rotate local centered UC into global frame
+		UnitCell reference_UC { UnitCell(AtomType::Sr, AtomType::Ti, m_global_lattice_constant.value()) };
+		reference_UC.RotateUC(Eigen::Quaterniond(1,0,0,0), permutation_number, permutation_direction);
 		LocalUC local_UC_centered { getCenteredUC() };
+		local_UC_centered.RotateUC(unit_quaternion.conjugate());
 
 		double m_Sr { ATOM_MASSES_U.at(0) };
 		double m_Ti { ATOM_MASSES_U.at(1) };
 		double m_O { ATOM_MASSES_U.at(2) };
 		double total_mass { m_Sr + m_Ti + 3*m_O };
 
-		UnitCell::Displacements displacements { local_UC_centered - reference_UC_rotated };
+		UnitCell::Displacements displacements { local_UC_centered - reference_UC };
 		Vector Sr_displacement_mass_weighted { sqrt(m_Sr/total_mass)*displacements.m_A_displacements.at(0).first };
 		Vector Ti_displacement_mass_weighted { sqrt(m_Ti/total_mass)*displacements.m_B_displacement };
 		Vector O_front_displacement_mass_weighted { sqrt(m_O/total_mass)*displacements.m_O_displacements.at(0).first };
@@ -920,15 +920,15 @@ public:
 			O_bottom_displacement_mass_weighted,
 			O_left_displacement_mass_weighted;
 
-		double phi_1 { mass_weighted_displacements.dot(phonon_pol_x_rot) };
-		double phi_2 { mass_weighted_displacements.dot(phonon_pol_y_rot) };
-		double phi_3 { mass_weighted_displacements.dot(phonon_pol_z_rot) };
+		Vector phi {};
+		phi.x() = mass_weighted_displacements.dot(phonon_pol_x);
+		phi.y() = mass_weighted_displacements.dot(phonon_pol_y);
+		phi.z() = mass_weighted_displacements.dot(phonon_pol_z);
 
-		Vector phi { phi_1, phi_2, phi_3 };
-		short phase_factor {getPhaseFactor()};
+		short phase_factor { getPhaseFactor() };
 
-		m_local_OP_global_frame = phase_factor*phi;
-		m_local_OP_local_frame = unit_quaternion.conjugate()*m_local_OP_global_frame.value();
+		m_local_OP_local_frame = phase_factor*phi;
+		m_local_OP_global_frame = unit_quaternion*(phase_factor*phi);
 	}
 
 	void calculateLocalPolarization(/*const Eigen::Matrix3d& BEC_Sr, const Eigen::Matrix3d& BEC_Ti, const Eigen::Matrix3d& BEC_O*/) {
@@ -936,7 +936,7 @@ public:
 		const short permutation_number { std::get<1>(getOrientation().value()) };
 		const UnitCell::Rotation permutation_direction { std::get<2>(getOrientation().value()) };
 
-		UnitCell reference_rotated { AtomType::Sr, AtomType::Ti, m_global_lattic_constant.value()};
+		UnitCell reference_rotated { AtomType::Sr, AtomType::Ti, m_global_lattice_constant.value()};
 		reference_rotated.RotateUC(unit_quaternion, permutation_number, permutation_direction);
 		LocalUC local_UC_centered { getCenteredUC() };
 
@@ -1009,7 +1009,7 @@ inline void calculateLatticeConstant(std::vector<LocalUC>& local_UCs) {
 		return acc + local_UC.m_local_lattic_constant;
 	});
 	
-	local_UCs.at(0).m_global_lattic_constant = sum/local_UCs.size();
+	local_UCs.at(0).m_global_lattice_constant = sum/local_UCs.size();
 }
 
 
@@ -1037,10 +1037,14 @@ inline Eigen::Vector3d convertCoordinates(const Position &pos, const Eigen::Matr
 
 inline double getMinimumImageSqDistance(const Atom& atom1, 
 										const Atom& atom2, 
+										const bool minimum_image = true,
 										const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt) {
 
 	Vector dr { atom2.m_position - atom1.m_position };
-	dr.array() -= (dr.array() + 0.5 - 1e-12).floor();
+
+	if (minimum_image) {
+		dr.array() -= (dr.array() + 0.5 - 1e-12).floor();
+	}
 
 	return getSqDistance(dr, cell_matrix);
 }
@@ -1050,6 +1054,7 @@ inline std::expected<NNIds, std::string> findNearestN(const Atom& reference_atom
 													  const size_t n, 
 													  const std::optional<size_t> exclude_idx,
 													  const std::optional<Eigen::Matrix3d>& cell_matrix = std::nullopt, 
+													  const bool wrap = true,
 													  const bool sort = false) {
 
 	if (n > atom_arr.size()) {
@@ -1075,12 +1080,33 @@ inline std::expected<NNIds, std::string> findNearestN(const Atom& reference_atom
 			continue;
 		}
 
-		nearest_neighbors.emplace_back(idx++, getMinimumImageSqDistance(reference_atom, other_atom, cell_matrix));
+		if (wrap) {
+			nearest_neighbors.emplace_back(idx++, getMinimumImageSqDistance(reference_atom, other_atom, true, cell_matrix));
+		}
+		else {
+			nearest_neighbors.emplace_back(idx++, getMinimumImageSqDistance(reference_atom, other_atom, false, cell_matrix));
+		}
 	}
 
-	std::ranges::nth_element(nearest_neighbors, nearest_neighbors.begin() + n, [](const auto &pair1, const auto &pair2){
-		return pair1.second < pair2.second;
-	});
+	auto minDistance = [](const auto &pair1, const auto &pair2) { 
+		return pair1.second < pair2.second; 
+	};
+
+
+	if (wrap) {
+		std::ranges::nth_element(nearest_neighbors, nearest_neighbors.begin() + n, minDistance);
+		nearest_neighbors.resize(n);
+	}
+	else {
+		std::ranges::partial_sort(nearest_neighbors, nearest_neighbors.begin()+n, minDistance);
+
+		size_t id {};
+		double cur_dist { nearest_neighbors.at(0).second };
+		while (nearest_neighbors.at(id).second < cur_dist + 1.5) {
+			id++;
+		}
+		nearest_neighbors.resize(id);
+	}
 
 	if (sort) {
 		std::ranges::sort(nearest_neighbors.begin(), nearest_neighbors.begin() + n, [](const auto &p1, const auto &p2){
@@ -1088,7 +1114,6 @@ inline std::expected<NNIds, std::string> findNearestN(const Atom& reference_atom
 		});
 	}
 
-	nearest_neighbors.resize(n);
 	return nearest_neighbors;
 }
 
@@ -1123,7 +1148,7 @@ inline Eigen::Matrix3d getRotationMatrix(const Eigen::Quaterniond& unit_quaterni
 	return 2*rotation_matrix;
 }
 
-inline std::vector<LocalUC::PhaseFactor> findPhaseFactor(const Atoms& B, const std::vector<NNIds>& B_NNs) {
+inline std::vector<LocalUC::PhaseFactor> findPhaseFactor(const Atoms& B, const std::vector<NNIds> B_NNs) {
 	// two coloring BFS algorithm to traverse the lattice as a spanning graph and setting the bloch wave phase factor accordingly
 	std::vector<int> phase_factors(B.size(), 0);
 	std::deque<size_t> queue;
@@ -1139,16 +1164,15 @@ inline std::vector<LocalUC::PhaseFactor> findPhaseFactor(const Atoms& B, const s
 				queue.push_back(current_child_id);
 				phase_factors.at(current_child_id) = -1*phase_factors.at(current_parent_id);
 			}
-			if (phase_factors.at(current_child_id) == phase_factors.at(current_parent_id)) {
-				continue; // exchange the continue with a new NN search without pbc first, store phase factor and b atom as pair, then full NN search and use that then to make the uc but with the phase factor in the pair 
+				// exchange the continue with a new NN search without pbc first, store phase factor and b atom as pair, then full NN search and use that then to make the uc but with the phase factor in the pair 
 				//throw std::runtime_error("Neighboring cells have the same phase_factor!");
-			}
+			std::println("parent id {}, child id {}, parent sign {} child sign {}", current_parent_id, current_child_id, phase_factors.at(current_parent_id), phase_factors.at(current_child_id));
 		}
 	}
 
 	std::vector<LocalUC::PhaseFactor> out; out.reserve(B.size());
 	for (size_t i { }; i < B.size(); i++) {
-		out.emplace_back(phase_factors.at(i) > 0 ? LocalUC::PhaseFactor::positive : LocalUC::PhaseFactor::negative);
+		out.emplace_back(phase_factors.at(i) == 1 ? LocalUC::PhaseFactor::positive : LocalUC::PhaseFactor::negative);
 	}
 
 	return out;
@@ -1731,7 +1755,8 @@ inline std::expected<AtomPositions, std::string> sortPositionsByType(const Posit
 inline std::expected<std::vector<NNIds>, std::string> getNearestNeighbors(const Atoms& atoms, 
 																		  const Atoms& ref_atoms,
 																		  const size_t n, 
-																		  const std::optional<Eigen::Matrix3d>& cell_matrix) {
+																		  const std::optional<Eigen::Matrix3d>& cell_matrix,
+																		  const bool wrap) {
 
 	std::vector<NNIds> nearest_neighbors;
 	nearest_neighbors.reserve(ref_atoms.size());
@@ -1744,7 +1769,7 @@ inline std::expected<std::vector<NNIds>, std::string> getNearestNeighbors(const 
 			exclude_idx = atom_id;
 		}
 
-		auto res = helper::findNearestN(ref_atom, atoms, n, exclude_idx, cell_matrix, false) 
+		auto res = helper::findNearestN(ref_atom, atoms, n, exclude_idx, cell_matrix, wrap, false) 
 			.transform([&nearest_neighbors](auto&& res) { nearest_neighbors.push_back(std::move(res)); });
 
 		if (!res) {

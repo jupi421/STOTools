@@ -16,6 +16,7 @@ int main() {
     auto A_NNs = getNearestNeighbors(atoms.m_A, atoms.m_B, 8, cell_matrix).value();
     auto O_NNs = getNearestNeighbors(atoms.m_O, atoms.m_B, 6, cell_matrix).value();
     auto B_NNs = getNearestNeighbors(atoms.m_B, atoms.m_B, 6, cell_matrix).value();
+    auto B_NNs_no_wrap = getNearestNeighbors(atoms.m_B, atoms.m_B, 6, cell_matrix, false).value(); // for BFS phase factor
 
     //for (size_t i = 0; i < B_NNs.size(); ++i) {
     //    std::println("reference index: {}", i);
@@ -26,7 +27,7 @@ int main() {
     //    std::println("");
     //}
 
-	auto phase_factors = helper::findPhaseFactor(atoms.m_B, B_NNs);
+	auto phase_factors = helper::findPhaseFactor(atoms.m_B, B_NNs_no_wrap);
 
 	auto local_UCs = createLocalUCs(atoms.m_A, atoms.m_B, atoms.m_O, A_NNs, O_NNs, phase_factors, PolCalc::DWType::APB, cell_matrix);
 
