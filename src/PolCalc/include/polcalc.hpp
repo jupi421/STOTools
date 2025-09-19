@@ -879,7 +879,7 @@ public:
 	void calculateLocalOP() {
 		// pass uncentered unit cell
 		// centered at origin, ey into plane, sequence: Sr front lower left, Ti, O front, O bottom, O left
-		const Eigen::Quaterniond& unit_quaternion { std::get<0>(getOrientation().value()) };
+		const Eigen::Quaterniond unit_quaternion { std::get<0>(getOrientation().value()) };
 		const short permutation_number { std::get<1>(getOrientation().value()) };
 		const UnitCell::Rotation permutation_direction { std::get<2>(getOrientation().value()) };
 
@@ -937,27 +937,17 @@ public:
 	}
 
 	void calculateLocalPolarization(/*const Eigen::Matrix3d& BEC_Sr, const Eigen::Matrix3d& BEC_Ti, const Eigen::Matrix3d& BEC_O*/) {
-		const Eigen::Quaterniond& unit_quaternion { std::get<0>(getOrientation().value()) };
+		const Eigen::Quaterniond unit_quaternion { std::get<0>(getOrientation().value()) };
 		const short permutation_number { std::get<1>(getOrientation().value()) };
 		const UnitCell::Rotation permutation_direction { std::get<2>(getOrientation().value()) };
 
-		UnitCell reference_rotated { AtomType::Sr, AtomType::Ti, m_global_lattice_constant.value()};
-		reference_rotated.RotateUC(unit_quaternion, permutation_number, permutation_direction);
+		UnitCell reference_UC { UnitCell(AtomType::Sr, AtomType::Ti, m_global_lattice_constant.value()) };
+		reference_UC.RotateUC(Eigen::Quaterniond(1,0,0,0), permutation_number, permutation_direction);
 		LocalUC local_UC_centered { getCenteredUC() };
+		local_UC_centered.RotateUC(unit_quaternion.conjugate());
 
-		double elementary_charge { 1.602176634e-19 };
-		Displacements displacements { local_UC_centered - reference_rotated };
-
-		auto rotate_displacements = [&unit_quaternion](std::vector<std::pair<Vector, Vector>>& displacements) {
-			for (auto&& [first, second] : displacements) {
-				first = unit_quaternion.conjugate()*first;
-				second = unit_quaternion.conjugate()*second;
-			}
-		};
-
-		rotate_displacements(displacements.m_A_displacements);
-		displacements.m_B_displacement = unit_quaternion.conjugate()*displacements.m_B_displacement;
-		rotate_displacements(displacements.m_O_displacements);
+		constexpr double elementary_charge { 1.602176634e-19 };
+		Displacements displacements { local_UC_centered - reference_UC };
 
 		double Z_Sr = 2.54, Z_Ti = 7.12, Z_Op = -5.66, Z_On = -2.0;
 
@@ -1000,7 +990,7 @@ public:
 		polarization.array() += (BEC_Oz*displacements.m_O_displacements.at(1).first).array();
 		polarization.array() += (BEC_Ox*displacements.m_O_displacements.at(2).first).array();
 
-		polarization /= reference_rotated.m_cell_volume;
+		polarization /= reference_UC.m_cell_volume;
 
 		m_local_polarization_local_frame = polarization;
 		m_local_polarization_global_frame = unit_quaternion*polarization;
