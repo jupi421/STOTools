@@ -6,3 +6,6 @@ src/PolFinder/*test*
 src/PolFinder/Poscar_test
 debug/*
 profiling/*
+op.out
+pol.out
+test/POL/*

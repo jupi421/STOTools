@@ -241,7 +241,6 @@ public:
 			return out;
 		};
 
-
 		Displacements displacements { };
 		displacements.m_A_displacements.reserve(m_A_cart_nopbc.size());
 		displacements.m_O_displacements.reserve(m_O_cart_nopbc.size());
@@ -395,16 +394,23 @@ private:
 		return angle;
 	}
 
-	void setDomain(const Position& ref, double DW_center_x, double tolerance) {
-		if (ref.x() < DW_center_x+tolerance && ref.x() > DW_center_x-tolerance) {
+	void setDomain(const Position& ref, Vector DW_centers, double tolerance, const Eigen::Matrix3d& cell_matrix) {
+		Position DW_center_cart { cell_matrix*Position(DW_centers.x(), 0, 0) };
+		Position DW_left_cart { cell_matrix*Position(DW_centers.y(), 0, 0) };
+		Position DW_right_cart { cell_matrix*Position(DW_centers.z(), 0, 0) };
+		Position ref_cart { cell_matrix*ref };
+		
+		if ((ref_cart.x() <= DW_center_cart.x()+tolerance && ref_cart.x() >= DW_center_cart.x()-tolerance) ||
+			ref_cart.x() >= DW_right_cart.x()-tolerance || ref_cart.x() <= DW_left_cart.x()+tolerance) {
 			m_side = DWSide::center;
 		}
-		else if (ref.x() > DW_center_x) {
+		else if (ref_cart.x() > DW_center_cart.x()) {
 			m_side = DWSide::right;
 		}
 		else {
 			m_side = DWSide::left;
 		}
+
 	}
 
 	void rebalancePlanes(std::vector<std::pair<Atom, double>>& atoms_upper, std::vector<std::pair<Atom, double>>& atoms_lower, size_t recursion_depth=0) {
@@ -552,8 +558,11 @@ private:
 
 		std::pair<Atom, double> rightmost_corner_lower { atoms_lower.at(0) };
 		for (const auto& corner : atoms_lower) {
-			double dist { (corner.first.m_position - rightmost_corner_upper.first.m_position).squaredNorm() };
-			if (dist < (rightmost_corner_lower.first.m_position - rightmost_corner_upper.first.m_position).squaredNorm()) {
+			Vector direct_dist { corner.first.m_position - rightmost_corner_upper.first.m_position };
+			double dist { direct_dist.dot(m_metric*direct_dist) };
+			Vector ref_dist { rightmost_corner_lower.first.m_position - rightmost_corner_upper.first.m_position };
+
+			if (dist < ref_dist.dot(m_metric*ref_dist)) {
 				rightmost_corner_lower = corner;
 			}
 		}
@@ -610,9 +619,10 @@ public:
 		return std::unexpected("Rotation not set!");
 	}
 
-	explicit LocalUC(const Atoms& A, const Atom& B, const Atoms& O, PhaseFactor phase_factor, DWType DW_type, const Eigen::Matrix3d& cell_matrix, double DW_center_x = 0.5, double tolerance = 1e-3) 
-	: m_B_direct_pbc(B), m_metric(cell_matrix.transpose() * cell_matrix), m_phase_factor(phase_factor), m_type(DW_type)
+	explicit LocalUC(const Atoms& A, const Atom& B, const Atoms& O, PhaseFactor phase_factor, DWType DW_type, const Eigen::Matrix3d& cell_matrix, Vector DW_center_x /*direct*/ = Vector(0.5, 0, 1), double tolerance /*angstroem*/ = 10)
+		: m_B_direct_pbc(B), m_metric(cell_matrix.transpose() * cell_matrix), m_phase_factor(phase_factor), m_type(DW_type)
 	{
+
 		if (A.size() != 8) {
 			throw std::runtime_error("LocalUC, Expected corners: 8, recieved: " + std::to_string(A.size()));
 		}
@@ -635,7 +645,7 @@ public:
 		Position COM_rel_to_B = helper::getCOM(A_rel_to_B);
 		m_COM_cart_nopbc = convertCoordinates(B.m_position + COM_rel_to_B, cell_matrix);
 
-		setDomain(B.m_position + COM_rel_to_B, DW_center_x, tolerance);
+		setDomain(B.m_position + COM_rel_to_B, DW_center_x, tolerance, cell_matrix);
 
 		std::vector<std::pair<Atom, double>> atoms_upper, atoms_lower;
 		atoms_upper.reserve(4);
@@ -699,16 +709,6 @@ public:
 		fill_cart(m_O_direct_pbc, m_O_cart_nopbc);
 		m_B_cart_nopbc = Atom(m_B_direct_pbc.m_atom_type, get_cart_pos_nowrap(B, ref_for_unwrap, cell_matrix));
 
-		// avg lattice constant
-		const Atoms m_A_cart_nopbc_flattened { [&]() {
-			Atoms temp; temp.reserve(8);
-			for (auto& [upper, lower] : m_A_cart_nopbc) {
-				temp.emplace_back(upper);
-				temp.emplace_back(lower);
-			}
-			return temp;
-		}() };
-
 		std::vector<double> lattice_dists;
 		lattice_dists.reserve(12);
 
@@ -720,7 +720,7 @@ public:
 			lattice_dists.push_back(dist);
 			dist = (m_A_cart_nopbc.at(i).second.m_position - m_A_cart_nopbc.at(j).second.m_position).norm();
 			lattice_dists.push_back(dist);
-			dist = (m_A_cart_nopbc.at(i).second.m_position - m_A_cart_nopbc.at(j).second.m_position).norm();
+			dist = (m_A_cart_nopbc.at(i).first.m_position - m_A_cart_nopbc.at(i).second.m_position).norm();
 			lattice_dists.push_back(dist);
 		}
 
@@ -753,9 +753,9 @@ public:
 			return std::unexpected("Cell in DW center!"); 
 		}
 
-		if (m_left_init_orientation && m_right_init_orientation) {
-			return std::unexpected("Initial Orientation already set!");
-		}
+		//if (m_left_init_orientation && m_right_init_orientation) {
+		//	return std::unexpected("Initial Orientation already set!");
+		//}
 
 		const Eigen::Quaterniond& quaternion { std::get<0>(orientation) };
 		const short permutation_number { std::get<1>(orientation) };
@@ -875,7 +875,6 @@ public:
 		return m_phase_factor.value() == PhaseFactor::positive ? 1 : -1;
 	}
 
-
 	void calculateLocalOP() {
 		// pass uncentered unit cell
 		// centered at origin, ey into plane, sequence: Sr front lower left, Ti, O front, O bottom, O left
@@ -940,16 +939,16 @@ public:
 		const Eigen::Quaterniond unit_quaternion { std::get<0>(getOrientation().value()) };
 		const short permutation_number { std::get<1>(getOrientation().value()) };
 		const UnitCell::Rotation permutation_direction { std::get<2>(getOrientation().value()) };
+		constexpr double elementary_charge { 1.602176634e-19 };
 
 		UnitCell reference_UC { UnitCell(AtomType::Sr, AtomType::Ti, m_global_lattice_constant.value()) };
 		reference_UC.RotateUC(Eigen::Quaterniond(1,0,0,0), permutation_number, permutation_direction);
 		LocalUC local_UC_centered { getCenteredUC() };
 		local_UC_centered.RotateUC(unit_quaternion.conjugate());
 
-		constexpr double elementary_charge { 1.602176634e-19 };
 		Displacements displacements { local_UC_centered - reference_UC };
 
-		double Z_Sr = 2.54, Z_Ti = 7.12, Z_Op = -5.66, Z_On = -2.0;
+		double Z_Sr = 2.54, Z_Ti = 7.12, Z_Op = -5.66, Z_On = -2.0; // Ri He Ferroelastic twin walls...
 
 		Eigen::Matrix3d BEC_Sr;
 		Eigen::Matrix3d BEC_Ti;
@@ -977,20 +976,32 @@ public:
 			0, Z_On, 0,
 			0, 0, Z_Op;
 
+		auto toSIUnits = [](auto& displacements) {
+			for (auto& [first, second] : displacements) {
+				first *= 1e-10;
+				second *= 1e-10;
+			}
+		};
+
+		toSIUnits(displacements.m_A_displacements);
+		displacements.m_B_displacement *= 1e-10;
+		toSIUnits(displacements.m_O_displacements);
+
 		Vector polarization { Vector::Zero() };
 
-		//std::println("localUC Oy coords {} {} {}, Oz coords {} {} {}, Ox coords {} {} {}, quaternion: w={} x={} y={} z={}", local_UC_centered.m_O_cart_nopbc.at(0).first.m_position.x(), local_UC_centered.m_O_cart_nopbc.at(0).first.m_position.y(), local_UC_centered.m_O_cart_nopbc.at(0).first.m_position.z(),
-		//	   local_UC_centered.m_O_cart_nopbc.at(1).first.m_position.x(), local_UC_centered.m_O_cart_nopbc.at(1).first.m_position.y(), local_UC_centered.m_O_cart_nopbc.at(1).first.m_position.z(), local_UC_centered.m_O_cart_nopbc.at(2).first.m_position.x(), local_UC_centered.m_O_cart_nopbc.at(2).first.m_position.y(), local_UC_centered.m_O_cart_nopbc.at(2).first.m_position.z(),
-		//	   unit_quaternion.x(), unit_quaternion.y(), unit_quaternion.z(), unit_quaternion.w());
-		//std::println();
-
-		polarization.array() += (BEC_Sr*displacements.m_A_displacements.at(0).first).array();
+		for (auto& [first, second] : displacements.m_A_displacements) {
+			polarization.array() += (BEC_Sr*first).array();
+			polarization.array() += (BEC_Sr*second).array();
+		}
 		polarization.array() += (BEC_Ti*displacements.m_B_displacement).array();
 		polarization.array() += (BEC_Oy*displacements.m_O_displacements.at(0).first).array();
 		polarization.array() += (BEC_Oz*displacements.m_O_displacements.at(1).first).array();
 		polarization.array() += (BEC_Ox*displacements.m_O_displacements.at(2).first).array();
+		polarization.array() += (BEC_Oy*displacements.m_O_displacements.at(0).second).array();
+		polarization.array() += (BEC_Oz*displacements.m_O_displacements.at(1).second).array();
+		polarization.array() += (BEC_Ox*displacements.m_O_displacements.at(2).second).array();
 
-		polarization /= reference_UC.m_cell_volume;
+		polarization *= elementary_charge/(reference_UC.m_cell_volume * std::pow(1e-10, 3));
 
 		m_local_polarization_local_frame = polarization;
 		m_local_polarization_global_frame = unit_quaternion*polarization;
@@ -1158,9 +1169,9 @@ inline std::vector<LocalUC::PhaseFactor> findPhaseFactor(const Atoms& B, const s
 				queue.push_back(current_child_id);
 				phase_factors.at(current_child_id) = -1*phase_factors.at(current_parent_id);
 			}
-				// exchange the continue with a new NN search without pbc first, store phase factor and b atom as pair, then full NN search and use that then to make the uc but with the phase factor in the pair 
-				//throw std::runtime_error("Neighboring cells have the same phase_factor!");
-			std::println("parent id {}, child id {}, parent sign {} child sign {}", current_parent_id, current_child_id, phase_factors.at(current_parent_id), phase_factors.at(current_child_id));
+			if (phase_factors.at(current_parent_id) == phase_factors.at(current_child_id)) {
+				throw std::runtime_error("neighboring UCs have same sign");
+			}
 		}
 	}
 
@@ -1308,8 +1319,6 @@ inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const Loc
 		cur_sq_dist = new_sq_dist;
 	}
 
-	std::cout << "Quaternion " << current_unit_quaternion << std::endl;
-	std::println("{}", cur_sq_dist);
 	return (current_unit_quaternion*initial_quaternion).normalized();
 }
 
@@ -1364,7 +1373,7 @@ inline void findInitialOrientation(LocalUC& local_UC, double step_size) {
 	std::expected<void, std::string> res = local_UC.setInitialOrientation(final_orientation);
 
 	if (!res) {
-		throw std::runtime_error("set initial Orientation failed");
+		throw std::runtime_error("set initial Orientation failed: "+res.error());
 	}
 
 	local_UC.m_orientation = final_orientation;
@@ -1915,7 +1924,6 @@ inline void calculateLocalObservables(std::vector<helper::LocalUC>& local_UCs, d
 		Eigen::Quaterniond best_quaternion { helper::gradientDescent(pristine_UC_sp, local_UC, local_UC_initial, step_size) };
 		std::tuple<Eigen::Quaterniond, short, helper::UnitCell::Rotation> orientation = std::make_tuple(best_quaternion, std::get<1>(local_UC_initial), std::get<2>(local_UC_initial));
 		local_UC.m_orientation = orientation;
-		local_UC.updateInitialOrientation(orientation); // use orientation of last cell on same side as initial
 
 		helper::UnitCell pristine_UC_sp_rot { pristine_UC_sp.getRotatedUC(best_quaternion) };
 		helper::UnitCell pristine_UC_sn_rot { pristine_UC_sn.getRotatedUC(best_quaternion) };
@@ -1929,7 +1937,7 @@ inline void calculateLocalObservables(std::vector<helper::LocalUC>& local_UCs, d
 		displacement_sp <= displacement_sn ? local_UC.m_O_rot_sign = 1 : local_UC.m_O_rot_sign = -1;
 
 		local_UC.sortOs(best_quaternion);
-
+		local_UC.updateInitialOrientation(orientation);
 		// calculate OP and Polarization
 		if (OP) {
 			local_UC.calculateLocalOP();
