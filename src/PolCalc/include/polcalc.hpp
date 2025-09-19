@@ -19,6 +19,7 @@
 #include <Eigen/Geometry>
 #include <numeric>
 
+size_t ITER {};
 // everything with right handed coordinate system looking along +y
 
 // TODO use openACC to parallelise on cpu or cuda
@@ -552,8 +553,11 @@ private:
 
 		std::pair<Atom, double> rightmost_corner_lower { atoms_lower.at(0) };
 		for (const auto& corner : atoms_lower) {
-			double dist { (corner.first.m_position - rightmost_corner_upper.first.m_position).squaredNorm() };
-			if (dist < (rightmost_corner_lower.first.m_position - rightmost_corner_upper.first.m_position).squaredNorm()) {
+			Vector direct_dist { corner.first.m_position - rightmost_corner_upper.first.m_position };
+			double dist { direct_dist.dot(m_metric*direct_dist) };
+			Vector ref_dist { rightmost_corner_lower.first.m_position - rightmost_corner_upper.first.m_position };
+
+			if (dist < ref_dist.dot(m_metric*ref_dist)) {
 				rightmost_corner_lower = corner;
 			}
 		}
@@ -613,6 +617,8 @@ public:
 	explicit LocalUC(const Atoms& A, const Atom& B, const Atoms& O, PhaseFactor phase_factor, DWType DW_type, const Eigen::Matrix3d& cell_matrix, double DW_center_x = 0.5, double tolerance = 1e-3) 
 	: m_B_direct_pbc(B), m_metric(cell_matrix.transpose() * cell_matrix), m_phase_factor(phase_factor), m_type(DW_type)
 	{
+
+		ITER++;
 		if (A.size() != 8) {
 			throw std::runtime_error("LocalUC, Expected corners: 8, recieved: " + std::to_string(A.size()));
 		}
@@ -699,16 +705,6 @@ public:
 		fill_cart(m_O_direct_pbc, m_O_cart_nopbc);
 		m_B_cart_nopbc = Atom(m_B_direct_pbc.m_atom_type, get_cart_pos_nowrap(B, ref_for_unwrap, cell_matrix));
 
-		// avg lattice constant
-		const Atoms m_A_cart_nopbc_flattened { [&]() {
-			Atoms temp; temp.reserve(8);
-			for (auto& [upper, lower] : m_A_cart_nopbc) {
-				temp.emplace_back(upper);
-				temp.emplace_back(lower);
-			}
-			return temp;
-		}() };
-
 		std::vector<double> lattice_dists;
 		lattice_dists.reserve(12);
 
@@ -720,7 +716,7 @@ public:
 			lattice_dists.push_back(dist);
 			dist = (m_A_cart_nopbc.at(i).second.m_position - m_A_cart_nopbc.at(j).second.m_position).norm();
 			lattice_dists.push_back(dist);
-			dist = (m_A_cart_nopbc.at(i).second.m_position - m_A_cart_nopbc.at(j).second.m_position).norm();
+			dist = (m_A_cart_nopbc.at(i).first.m_position - m_A_cart_nopbc.at(i).second.m_position).norm();
 			lattice_dists.push_back(dist);
 		}
 
@@ -1158,9 +1154,9 @@ inline std::vector<LocalUC::PhaseFactor> findPhaseFactor(const Atoms& B, const s
 				queue.push_back(current_child_id);
 				phase_factors.at(current_child_id) = -1*phase_factors.at(current_parent_id);
 			}
-				// exchange the continue with a new NN search without pbc first, store phase factor and b atom as pair, then full NN search and use that then to make the uc but with the phase factor in the pair 
-				//throw std::runtime_error("Neighboring cells have the same phase_factor!");
-			std::println("parent id {}, child id {}, parent sign {} child sign {}", current_parent_id, current_child_id, phase_factors.at(current_parent_id), phase_factors.at(current_child_id));
+			if (phase_factors.at(current_parent_id) == phase_factors.at(current_child_id)) {
+				throw std::runtime_error("neighboring UCs have same sign");
+			}
 		}
 	}
 
@@ -1172,6 +1168,7 @@ inline std::vector<LocalUC::PhaseFactor> findPhaseFactor(const Atoms& B, const s
 	return out;
 }
 
+size_t COUNTER {};
 inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const LocalUC &local_UC, 
 										  const std::tuple<Eigen::Quaterniond, short, UnitCell::Rotation>& init_orientation, double step_size = 0.0005 ) {
 	constexpr double threshold { 1e-12 };
@@ -1308,8 +1305,9 @@ inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const Loc
 		cur_sq_dist = new_sq_dist;
 	}
 
-	std::cout << "Quaternion " << current_unit_quaternion << std::endl;
-	std::println("{}", cur_sq_dist);
+	std::print("Quaternion of localUC id {}: ", COUNTER++);
+	std::cout << current_unit_quaternion << std::endl;
+	std::println("fitted total sq dist: {}", cur_sq_dist);
 	return (current_unit_quaternion*initial_quaternion).normalized();
 }
 
@@ -1915,7 +1913,6 @@ inline void calculateLocalObservables(std::vector<helper::LocalUC>& local_UCs, d
 		Eigen::Quaterniond best_quaternion { helper::gradientDescent(pristine_UC_sp, local_UC, local_UC_initial, step_size) };
 		std::tuple<Eigen::Quaterniond, short, helper::UnitCell::Rotation> orientation = std::make_tuple(best_quaternion, std::get<1>(local_UC_initial), std::get<2>(local_UC_initial));
 		local_UC.m_orientation = orientation;
-		local_UC.updateInitialOrientation(orientation); // use orientation of last cell on same side as initial
 
 		helper::UnitCell pristine_UC_sp_rot { pristine_UC_sp.getRotatedUC(best_quaternion) };
 		helper::UnitCell pristine_UC_sn_rot { pristine_UC_sn.getRotatedUC(best_quaternion) };
