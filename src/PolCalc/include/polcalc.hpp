@@ -242,7 +242,6 @@ public:
 			return out;
 		};
 
-
 		Displacements displacements { };
 		displacements.m_A_displacements.reserve(m_A_cart_nopbc.size());
 		displacements.m_O_displacements.reserve(m_O_cart_nopbc.size());
@@ -975,11 +974,6 @@ public:
 
 		Vector polarization { Vector::Zero() };
 
-		//std::println("localUC Oy coords {} {} {}, Oz coords {} {} {}, Ox coords {} {} {}, quaternion: w={} x={} y={} z={}", local_UC_centered.m_O_cart_nopbc.at(0).first.m_position.x(), local_UC_centered.m_O_cart_nopbc.at(0).first.m_position.y(), local_UC_centered.m_O_cart_nopbc.at(0).first.m_position.z(),
-		//	   local_UC_centered.m_O_cart_nopbc.at(1).first.m_position.x(), local_UC_centered.m_O_cart_nopbc.at(1).first.m_position.y(), local_UC_centered.m_O_cart_nopbc.at(1).first.m_position.z(), local_UC_centered.m_O_cart_nopbc.at(2).first.m_position.x(), local_UC_centered.m_O_cart_nopbc.at(2).first.m_position.y(), local_UC_centered.m_O_cart_nopbc.at(2).first.m_position.z(),
-		//	   unit_quaternion.x(), unit_quaternion.y(), unit_quaternion.z(), unit_quaternion.w());
-		//std::println();
-
 		polarization.array() += (BEC_Sr*displacements.m_A_displacements.at(0).first).array();
 		polarization.array() += (BEC_Ti*displacements.m_B_displacement).array();
 		polarization.array() += (BEC_Oy*displacements.m_O_displacements.at(0).first).array();
@@ -989,7 +983,7 @@ public:
 		polarization /= reference_UC.m_cell_volume;
 
 		m_local_polarization_local_frame = polarization;
-		m_local_polarization_global_frame = unit_quaternion*polarization;
+		m_local_polarization_global_frame = unit_quaternion.conjugate()*polarization;
 	}
 
 };
