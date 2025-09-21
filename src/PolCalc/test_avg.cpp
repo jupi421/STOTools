@@ -3,7 +3,7 @@
 using namespace PolCalc;
 
 int main() {
-	for (size_t i {40}; i<=3690; i+=50) {
+	for (size_t i { 200 }; i<=9300; i+=50) {
 		auto poscar = readPOSCAR("./test/poscars/POSCAR."+std::to_string(i)).value(); // or "POSCAR"
 		Positions positions_raw = poscar.m_positions_direct;
 
@@ -34,6 +34,7 @@ int main() {
 		calculateLocalObservables(local_UCs, 0.0005);
 		auto obs = calculateObservable(local_UCs, 0.25);
 
+		std::println("Writing data for config {}", i);
 		write("test/op/op"+std::to_string(i)+".out", obs.first);
 		write("test/pol/pol"+std::to_string(i)+".out", obs.second);
 	}

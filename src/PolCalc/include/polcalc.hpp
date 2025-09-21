@@ -24,6 +24,7 @@
 // TODO use openACC to parallelise on cpu or cuda
 // for multiple frames reset the static orientation in the LocalUCs
 // write different behavior for other filetypes (CONTCAR, XDATCAR, xyz, ...), calculate atom numbers??? 
+
 namespace PolCalc {
 
 using Position = Eigen::Vector3d;
@@ -105,7 +106,7 @@ inline Eigen::Vector3d convertCoordinates(const Position &pos, const Eigen::Matr
 static inline Position getCOM(const Atoms &atom);
 
 class UnitCell {
-	// tetragonal unit cell with COM at origin
+	// TODO tetragonal unit cell with COM at origin
 public:
 	enum class Rotation {
 		None=0, right, left  // std::ranges::rotate right or left
@@ -258,7 +259,7 @@ public:
 			throw std::runtime_error("permutation_number has to be in [0,3]!");
 		}
 
-		Eigen::Quaterniond unit_quaternion { R }; // if R is rotation matrix, convert to unit quaternion
+		Eigen::Quaterniond unit_quaternion { R }; 
 		unit_quaternion.normalize();
 
 		auto rotate_points = [&](std::vector<std::pair<Atom, Atom>>& pairs) {
@@ -753,10 +754,6 @@ public:
 			return std::unexpected("Cell in DW center!"); 
 		}
 
-		//if (m_left_init_orientation && m_right_init_orientation) {
-		//	return std::unexpected("Initial Orientation already set!");
-		//}
-
 		const Eigen::Quaterniond& quaternion { std::get<0>(orientation) };
 		const short permutation_number { std::get<1>(orientation) };
 
@@ -887,17 +884,17 @@ public:
 		Vector ey { 0, 1, 0 };
 		Vector ez { 0, 0, 1 };
 
-		Eigen::VectorXd phonon_pol_x(15); // { 0, 0, 0,   0, 0, 0,   0, 0, -1,   0, 1, 0,   0,  0, 0 }
-		Eigen::VectorXd phonon_pol_y(15); // { 0, 0, 0,   0, 0, 0,   0, 0,  0,  -1, 0, 0,   0,  0, 1 }
-		Eigen::VectorXd phonon_pol_z(15); // { 0, 0, 0,   0, 0, 0,   1, 0,  0,   0, 0, 0,   0, -1, 0 }
+		Eigen::VectorXd phonon_pol_x(15);
+		Eigen::VectorXd phonon_pol_y(15);
+		Eigen::VectorXd phonon_pol_z(15);
 
 		phonon_pol_x << zeros, zeros, -ez, ey, zeros;
 		phonon_pol_y << zeros, zeros, zeros, -ex, ez;
 		phonon_pol_z << zeros, zeros, ex, zeros, -ey;
 
-		phonon_pol_x *= std::sqrt(1.0/2.0); //.normalize();
-		phonon_pol_y *= std::sqrt(1.0/2.0); //.normalize();
-		phonon_pol_z *= std::sqrt(1.0/2.0); //.normalize();
+		phonon_pol_x.normalize();
+		phonon_pol_y.normalize();
+		phonon_pol_z.normalize();
 
 		// rotate local centered UC into global frame
 		UnitCell reference_UC { UnitCell(AtomType::Sr, AtomType::Ti, m_global_lattice_constant.value()) };
@@ -948,7 +945,7 @@ public:
 
 		Displacements displacements { local_UC_centered - reference_UC };
 
-		double Z_Sr = 2.54, Z_Ti = 7.12, Z_Op = -5.66, Z_On = -2.0; // Ri He Ferroelastic twin walls...
+		double Z_Sr = 2.54, Z_Ti = 7.12, Z_Op = -5.66, Z_On = -2.0;
 
 		Eigen::Matrix3d BEC_Sr;
 		Eigen::Matrix3d BEC_Ti;
@@ -1154,7 +1151,7 @@ inline Eigen::Matrix3d getRotationMatrix(const Eigen::Quaterniond& unit_quaterni
 }
 
 inline std::vector<LocalUC::PhaseFactor> findPhaseFactor(const Atoms& B, const std::vector<NNIds> B_NNs) {
-	// two coloring BFS algorithm to traverse the lattice as a spanning graph and setting the bloch wave phase factor accordingly
+	// two coloring BFS algorithm to traverse the lattice as a spanning graph and setting the bloch wave phase factor accordingly, omitting pbc wrapping
 	std::vector<int> phase_factors(B.size(), 0);
 	std::deque<size_t> queue;
 
@@ -1278,7 +1275,7 @@ inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const Loc
 				double new_step_size = std::pow(1.1, i) * cur_step_size;
 				double new_lambda { lambda(q, grad_L, new_step_size) };
 				Eigen::Vector4d delta { new_step_size*grad_L.coeffs() + new_lambda*q.coeffs() };
-				// forward search
+				// bidirectional search
 				Eigen::Quaterniond new_q_f { q.coeffs() - delta };
 				Eigen::Quaterniond new_q_b { q.coeffs() + delta };
 				new_q_f.normalize();
@@ -1357,7 +1354,6 @@ inline void findInitialOrientation(LocalUC& local_UC, double step_size) {
 			const Position& pseudo_UC_front_O { pseudo_unit_cell_centered.m_O_cart_nopbc.at(0).first.m_position };
 			double cur_front_O_sq_distance { (pristine_UC_front_O - pseudo_UC_front_O).squaredNorm() };
 
-			// update best distance
 			if (cur_front_O_sq_distance < std::get<0>(best_uc)) {
 				std::get<0>(best_uc) = cur_front_O_sq_distance;
 				std::get<1>(best_uc) = unit_quaternion;
@@ -1415,7 +1411,6 @@ inline Positions loadPosFromFile(std::string filename,
 	return positions;
 }
 
-// Add near the top of polcalc.hpp
 struct POSCARData {
 	Eigen::Matrix3d m_cell;              // columns are a, b, c
 	Positions       m_positions_direct;  // fractional coordinates
@@ -1423,22 +1418,13 @@ struct POSCARData {
 	std::vector<size_t>       m_counts;
 };
 
-
-
-// XDATCAR parser — drop into your project next to polcalc.hpp (same namespace)
-// Produces one POSCAR-like frame per MD step in an XDATCAR file.
-// Robust to VASP4/5 headers, with or without the symbols line, and supports
-// both "Direct configuration = N" style and the single-frame style with a
-// lone "Direct"/"Cartesian" line.
-
-
 struct XDATFrame {
-	long long step{};   // 1-based configuration index if available; otherwise sequential
-	POSCARData data;    // cell, symbols, counts, positions (DIRECT)
+	long long step{}; 
+	POSCARData data; 
 };
 
 struct XDATParseOptions {
-	bool wrap_frac = false;   // wrap fractional coordinates to [0,1)
+	bool wrap_frac = false;
 };
 
 namespace xdatcar_detail {
@@ -1465,12 +1451,11 @@ inline void wrap01(Eigen::Vector3d &f) {
 }
 inline std::string lower(std::string s){ for(char &c:s) c=(char)std::tolower((unsigned char)c); return s; }
 
-// Try to parse lines like: "Direct configuration =   42" or "Cartesian configuration=7"
 inline bool parse_config_header(const std::string& line, bool &is_direct, long long &step_out) {
 	auto low = lower(line);
 	if (low.find("configuration") == std::string::npos) return false;
 	is_direct = low.find("direct") != std::string::npos;
-	// find '=' and read an integer after it
+	
 	auto eq = low.find('=');
 	if (eq != std::string::npos) {
 		std::string tail = low.substr(eq+1);
@@ -1483,7 +1468,7 @@ inline bool parse_config_header(const std::string& line, bool &is_direct, long l
 		}
 		if (any) { step_out = v; return true; }
 	}
-	// If no explicit number, still treat as config header
+
 	step_out = -1; return true;
 }
 }
@@ -1496,24 +1481,21 @@ readXDATCAR(const std::string& filename, const XDATParseOptions& opt = {})
 	if (!in) return std::unexpected("Failed loading file: " + filename);
 
 	std::string line;
-	// 1) Comment/title
+
 	if (!std::getline(in, line)) return std::unexpected("Unexpected EOF at comment");
 
-	// 2) Scale
 	if (!std::getline(in, line)) return std::unexpected("Unexpected EOF at scale");
 	double scale = 1.0; {
 		auto toks = split_ws(line); if (toks.empty()) return std::unexpected("Bad scale line");
 		scale = std::stod(toks[0]);
 	}
 
-	// 3) Lattice vectors (3 lines)
 	auto read_vec = [&](Eigen::Vector3d& v)->bool{
 		if (!std::getline(in, line)) return false; std::istringstream iss(line); return (bool)(iss>>v[0]>>v[1]>>v[2]); };
 	Eigen::Vector3d a,b,c; if (!read_vec(a) || !read_vec(b) || !read_vec(c))
 		return std::unexpected("Unexpected EOF at lattice vectors");
 	Eigen::Matrix3d cell; cell.col(0) = scale*a; cell.col(1) = scale*b; cell.col(2) = scale*c;
 
-	// 4) Symbols (optional VASP5) or counts (VASP4)
 	if (!std::getline(in, line)) return std::unexpected("Unexpected EOF after lattice");
 	auto toks = split_ws(line);
 
@@ -1521,13 +1503,12 @@ readXDATCAR(const std::string& filename, const XDATParseOptions& opt = {})
 	std::vector<size_t> counts;
 
 	if (all_int(toks)) {
-		// VASP4: no symbols line; fabricate using S1, S2, ...
 		counts.reserve(toks.size());
 		for (auto &t : toks) counts.push_back((size_t)std::stoull(t));
 		symbols.reserve(counts.size());
 		for (size_t i=0;i<counts.size();++i) symbols.push_back("S" + std::to_string(i+1));
 	} else {
-		symbols = toks; // VASP5 symbols line present
+		symbols = toks; 
 		if (!std::getline(in, line)) return std::unexpected("Unexpected EOF at counts line");
 		toks = split_ws(line);
 		if (!all_int(toks)) return std::unexpected("Counts line is not all integers");
@@ -1536,25 +1517,22 @@ readXDATCAR(const std::string& filename, const XDATParseOptions& opt = {})
 			return std::unexpected("Symbols and counts size mismatch");
 	}
 
-	// 5) Optional 'Selective dynamics' line — rarely appears in XDATCAR, skip if present
 	std::streampos after_counts_pos = in.tellg();
 	if (!std::getline(in, line)) return std::unexpected("Unexpected EOF at coordinate header");
 	std::string low = lower(line);
-	if (low.starts_with("s")) { // Selective dynamics
+	if (low.starts_with("s")) { 
 		if (!std::getline(in, line)) return std::unexpected("Unexpected EOF after Selective dynamics");
 		low = lower(line);
 	}
 
-	bool header_direct = false; // if a lone 'Direct' or 'Cartesian' line precedes the first frame
+	bool header_direct = false;
 	long long step_from_header = -1;
 	if (parse_config_header(line, header_direct, step_from_header)) {
-		// e.g., "Direct configuration = 1"
 	} else if (low.starts_with("d")) {
 		header_direct = true;
 	} else if (low.starts_with("c")) {
 		header_direct = false;
 	} else {
-		// Not a coordinate header; rewind so the next read will pick this line again
 		in.seekg(after_counts_pos);
 	}
 
@@ -1572,14 +1550,13 @@ readXDATCAR(const std::string& filename, const XDATParseOptions& opt = {})
 			std::istringstream iss(line);
 			double x,y,z; if (!(iss>>x>>y>>z)) return std::unexpected("Bad coordinate line at atom "+std::to_string(i));
 			Eigen::Vector3d v(x,y,z);
-			if (!as_direct) v = invC * v; // convert from Cartesian
+			if (!as_direct) v = invC * v;
 			if (opt.wrap_frac) wrap01(v);
 			pos.emplace_back(v);
 		}
 		return pos;
 	};
 
-	// Case A: file begins with a lone "Direct"/"Cartesian" line -> read first (and possibly only) frame
 	if (low.starts_with("d") || low.starts_with("c") || step_from_header>=0) {
 		bool as_direct = (step_from_header>=0) ? header_direct : header_direct; // same flag
 		long long step = (step_from_header>=0) ? step_from_header : 1LL;
@@ -1589,14 +1566,12 @@ readXDATCAR(const std::string& filename, const XDATParseOptions& opt = {})
 		frames.push_back(XDATFrame{step, std::move(pd)});
 	}
 
-	// Case B: additional frames marked by configuration lines
 	while (true) {
 		std::streampos here = in.tellg();
-		if (!std::getline(in, line)) break; // EOF
+		if (!std::getline(in, line)) break;
 		if (line.empty()) continue;
 		bool as_direct=false; long long step=-1;
 		if (!parse_config_header(line, as_direct, step)) {
-			// If we read something else, rewind and stop (XDATCAR usually has only config lines after first frame)
 			in.seekg(here); break;
 		}
 		auto pos = read_one_frame(as_direct, step);
@@ -1605,7 +1580,6 @@ readXDATCAR(const std::string& filename, const XDATParseOptions& opt = {})
 		frames.push_back(XDATFrame{ step>=0 ? step : (long long)frames.size()+1, std::move(pd)});
 	}
 
-	// If we never hit any header and didn't load a frame yet, try to read a single frame directly (rare)
 	if (frames.empty()) {
 		auto pos = read_one_frame(true, 1);
 		if (!pos) return std::unexpected(pos.error());
@@ -1626,7 +1600,6 @@ readXDATCARAsPOSCARFrames(const std::string& filename, const XDATParseOptions& o
 	return out;
 }
 
-// Robust VASP4/5 parser (handles optional symbols line and Selective dynamics)
 inline std::expected<POSCARData, std::string>
 readPOSCAR(const std::string& filename)
 {
@@ -1646,9 +1619,7 @@ readPOSCAR(const std::string& filename)
 	};
 
 	std::string line;
-	// 1) comment
 	if (!std::getline(in, line)) return std::unexpected("Unexpected EOF at comment");
-	// 2) scale
 	if (!std::getline(in, line)) return std::unexpected("Unexpected EOF at scale");
 	double scale = std::stod(split(line).at(0));
 
@@ -1662,20 +1633,17 @@ readPOSCAR(const std::string& filename)
 	if (!read_vec(a) || !read_vec(b) || !read_vec(c))
 		return std::unexpected("Unexpected EOF at lattice vectors");
 
-	// Build cell with lattice vectors as COLUMNS
 	Eigen::Matrix3d cell;
 	cell.col(0) = scale * a;
 	cell.col(1) = scale * b;
 	cell.col(2) = scale * c;
 
-	// 6) symbols or counts
 	if (!std::getline(in, line)) return std::unexpected("Unexpected EOF at symbols/counts");
 	auto toks = split(line);
 	std::vector<std::string> symbols;
 	std::vector<size_t> counts;
 
 	if (all_int(toks)) {
-		// VASP4: counts directly
 		for (auto& t : toks) counts.push_back(static_cast<size_t>(std::stoll(t)));
 	} else {
 		symbols = toks;
@@ -1685,19 +1653,17 @@ readPOSCAR(const std::string& filename)
 		for (auto& t : cts) counts.push_back(static_cast<size_t>(std::stoll(t)));
 	}
 
-	// Optional "Selective dynamics"
 	std::streampos before_coord_type = in.tellg();
 	if (!std::getline(in, line)) return std::unexpected("Missing coordinate type");
 	{
 		auto low = line; std::ranges::transform(low, low.begin(), ::tolower);
 		if (!(low.starts_with("d") || low.starts_with("c"))) {
-			// assume this was "Selective dynamics", read the real coord-type next
 			if (!std::getline(in, line)) return std::unexpected("Missing coordinate type after Selective dynamics");
 		}
 	}
 	std::string coordtype = line;
 	std::string low = coordtype; std::ranges::transform(low, low.begin(), ::tolower);
-	bool direct = low.starts_with("d"); // "Direct" or "Fractional"
+	bool direct = low.starts_with("d"); 
 
 	size_t n_atoms = 0; for (auto n : counts) n_atoms += n;
 
@@ -1708,12 +1674,10 @@ readPOSCAR(const std::string& filename)
 		double x,y,z; 
 		if (!(iss >> x >> y >> z))
 			return std::unexpected("Bad coordinate line at atom " + std::to_string(i));
-		pos.emplace_back(x,y,z); // read as given
+		pos.emplace_back(x,y,z); 
 	}
 
-	// Convert to DIRECT if needed
 	if (!direct) {
-		// r_dir = C^{-1} * r_cart
 		Eigen::Matrix3d invC = cell.inverse();
 		for (auto& p : pos) p = invC * p;
 	}
