@@ -17,13 +17,14 @@
 #include <cmath>
 #include <Eigen/Core>
 #include <Eigen/Geometry>
+#include <numeric>
 
-size_t COUNTER = 0;
 // everything with right handed coordinate system looking along +y
 
 // TODO use openACC to parallelise on cpu or cuda
 // for multiple frames reset the static orientation in the LocalUCs
 // write different behavior for other filetypes (CONTCAR, XDATCAR, xyz, ...), calculate atom numbers??? 
+
 namespace PolCalc {
 
 using Position = Eigen::Vector3d;
@@ -52,7 +53,7 @@ struct Atom {
 
 	Atom() = default;
 	Atom(AtomType atom_type, const Position& position) 
-		: m_atom_type(atom_type), m_position(position)
+	: m_atom_type(atom_type), m_position(position)
 	{}
 };
 
@@ -87,14 +88,15 @@ struct ObservableData {
 	}
 
 	ObservableData(std::vector<double> center, Vectors average, Vectors variance, Observable observable) 
-		: m_bin_center(center), m_observable_average(average), m_observable_variance(variance), m_observable(observable)
+	: m_bin_center(center), m_observable_average(average), m_observable_variance(variance), m_observable(observable)
 	{} 
 };
 
 std::expected<std::vector<NNIds>, std::string> getNearestNeighbors(const Atoms& atoms, 
 																   const Atoms& reference_atoms,
 																   const size_t n, 
-																   const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt);
+																   const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt,
+																   const bool wrap = true);
 
 
 namespace helper {
@@ -104,8 +106,8 @@ inline Eigen::Vector3d convertCoordinates(const Position &pos, const Eigen::Matr
 static inline Position getCOM(const Atoms &atom);
 
 class UnitCell {
-	// tetragonal unit cell with COM at origin
-	public:
+	// TODO tetragonal unit cell with COM at origin
+public:
 	enum class Rotation {
 		None=0, right, left  // std::ranges::rotate right or left
 	};
@@ -114,8 +116,9 @@ class UnitCell {
 	Atom m_B_cart_nopbc { };
 	std::vector<std::pair<Atom, Atom>> m_O_cart_nopbc { };
 	Position m_COM_cart_nopbc { Position::Zero() };
+	double m_cell_volume {};
 
-	private:
+private:
 	Eigen::Quaterniond m_orientation { 1, 0, 0, 0 };
 	std::pair<short, Rotation> m_permutation_number { };
 
@@ -125,18 +128,20 @@ class UnitCell {
 		atom.m_position = pos*cos(angle) + (1-cos(angle))*(pos.dot(axis))*axis + sin(angle)*axis.cross(pos);
 	}
 
-	public:
+public:
 	UnitCell() {
 		m_A_cart_nopbc.reserve(4);
 		m_O_cart_nopbc.reserve(3);
 	}
 
-	UnitCell(AtomType type_A, AtomType type_B) {
+	UnitCell(AtomType type_A, AtomType type_B, double lattice_const = 3.905) {
 		m_A_cart_nopbc.reserve(4);
 		m_O_cart_nopbc.reserve(3);
 
-		constexpr double a { 3.905 };
-		constexpr double c { a }; 
+		const double a { lattice_const };
+		const double c { a }; 
+
+		m_cell_volume = a*a*c;
 
 		Eigen::Vector3d ex = Eigen::Vector3d(1, 0, 0);
 		Eigen::Vector3d ey = Eigen::Vector3d(0, 1, 0);
@@ -170,14 +175,15 @@ class UnitCell {
 
 	UnitCell(AtomType type_A, AtomType type_B, short O_rot_sign /* = +- 1*/, 
 		  const Eigen::Quaterniond& orientation, double rot_angle = 3*M_PI/180, 
-		  AtomType type_O = AtomType::O)
-		: m_orientation(orientation)
+		  double lattice_const = 3.905, AtomType type_O = AtomType::O)
+	: m_orientation(orientation)
 	{
 		m_A_cart_nopbc.reserve(4);
 		m_O_cart_nopbc.reserve(3);
 
-		constexpr double a { 3.905 };
-		constexpr double c { a }; 
+		const double a { lattice_const };
+		const double c { a }; 
+		m_cell_volume = a*a*c;
 
 		Eigen::Vector3d ex = Eigen::Vector3d(1, 0, 0);
 		Eigen::Vector3d ey = Eigen::Vector3d(0, 1, 0);
@@ -253,7 +259,7 @@ class UnitCell {
 			throw std::runtime_error("permutation_number has to be in [0,3]!");
 		}
 
-		Eigen::Quaterniond unit_quaternion { R }; // if R is rotation matrix, convert to unit quaternion
+		Eigen::Quaterniond unit_quaternion { R }; 
 		unit_quaternion.normalize();
 
 		auto rotate_points = [&](std::vector<std::pair<Atom, Atom>>& pairs) {
@@ -328,9 +334,12 @@ public:
 	using UnitCell::m_B_cart_nopbc;
 	using UnitCell::m_O_cart_nopbc;
 	using UnitCell::m_COM_cart_nopbc;
+
+	double m_local_lattice_constant;
 	std::optional<Vector> m_local_OP_local_frame;
 	std::optional<Vector> m_local_OP_global_frame;
-	std::optional<Vector> m_local_polarization;
+	std::optional<Vector> m_local_polarization_local_frame;
+	std::optional<Vector> m_local_polarization_global_frame;
 	using UnitCell::operator-;
 	using UnitCell::Rotation;
 
@@ -339,8 +348,10 @@ public:
 private:
 	static inline std::optional<std::tuple<Eigen::Quaterniond, short, Rotation>> m_right_init_orientation;
 	static inline std::optional<std::tuple<Eigen::Quaterniond, short, Rotation>> m_left_init_orientation;
+	static inline std::optional<double> m_global_lattice_constant;
 	std::optional<PhaseFactor> m_phase_factor;
 	Eigen::Matrix3d m_metric;
+
 
 	static Position minimumImage(const Position& pos) {
 		return (pos.array() - (pos.array() + 0.5 - 1e-11).floor()).matrix();
@@ -357,7 +368,7 @@ private:
 		}
 		return temp;
 	}
-	
+
 	static void wrapDirectCoordinates(std::vector<std::pair<Atom, double>>& atoms, Position&& ref) {
 		for (auto& pair : atoms) {
 			pair.first.m_position = wrapDirectCoordinates(pair.first.m_position + ref);
@@ -384,18 +395,25 @@ private:
 		return angle;
 	}
 
-	void setDomain(const Position& ref, double DW_center_x, double tolerance) {
-		if (ref.x() < DW_center_x+tolerance && ref.x() > DW_center_x-tolerance) {
+	void setDomain(const Position& ref, Vector DW_centers, double tolerance, const Eigen::Matrix3d& cell_matrix) {
+		Position DW_center_cart { cell_matrix*Position(DW_centers.x(), 0, 0) };
+		Position DW_left_cart { cell_matrix*Position(DW_centers.y(), 0, 0) };
+		Position DW_right_cart { cell_matrix*Position(DW_centers.z(), 0, 0) };
+		Position ref_cart { cell_matrix*ref };
+		
+		if ((ref_cart.x() <= DW_center_cart.x()+tolerance && ref_cart.x() >= DW_center_cart.x()-tolerance) ||
+			ref_cart.x() >= DW_right_cart.x()-tolerance || ref_cart.x() <= DW_left_cart.x()+tolerance) {
 			m_side = DWSide::center;
 		}
-		else if (ref.x() > DW_center_x) {
+		else if (ref_cart.x() > DW_center_cart.x()) {
 			m_side = DWSide::right;
 		}
 		else {
 			m_side = DWSide::left;
 		}
+
 	}
-	
+
 	void rebalancePlanes(std::vector<std::pair<Atom, double>>& atoms_upper, std::vector<std::pair<Atom, double>>& atoms_lower, size_t recursion_depth=0) {
 		if (recursion_depth > 8) {
 			return;
@@ -421,7 +439,7 @@ private:
 			atoms_upper.push_back(*highest_lower);
 			atoms_lower.erase(highest_lower);
 		}
-		 
+
 		return rebalancePlanes(atoms_upper, atoms_lower, ++recursion_depth);
 	}
 
@@ -435,7 +453,7 @@ private:
 			for (size_t j { 0 }; j < i; j++) {
 				Position pos1 { atoms[i].m_position };
 				Position pos2 { atoms[j].m_position };
-				
+
 				double cos { pos1.dot(m_metric*pos2) / sqrt(pos1.dot(m_metric*pos1) * pos2.dot(m_metric*pos2)) };
 				if (1+cos < cos_tolerance) {
 					matches.emplace_back(atoms[i], atoms[j], pos1-pos2);
@@ -487,64 +505,37 @@ private:
 		return matches_sorted;
 	}
 
-public:
-	std::expected<std::tuple<Eigen::Quaterniond, short, Rotation>, std::string> getInitialOrientation() const {
-		if (!m_left_init_orientation || !m_right_init_orientation) {
-			return std::unexpected("Initial rotation not set!");
-		}
-		else if (m_side == DWSide::left || m_side == DWSide::center) {
-			return m_left_init_orientation.value();
-		}
-		else if (m_side == DWSide::right) {
-			return m_right_init_orientation.value();
-		}
-		else {
-			return std::unexpected("DW side unknown, initilization failed");
-		}
-	}
+	std::pair<std::vector<std::pair<Atom, double>>, std::vector<std::pair<Atom, double>>> buildAPBCell(const Atoms& A_rel_to_B, const Atom& B, const Position& COM_rel_to_B, const Eigen::Matrix3d& cell_matrix) {
+		std::vector<std::pair<Atom, double>> atoms_upper, atoms_lower;
+		atoms_upper.reserve(4);
+		atoms_lower.reserve(4);
 
-	std::expected<std::tuple<Eigen::Quaterniond, short, Rotation>, std::string> getOrientation() const {
-		if (m_orientation) {
-			return m_orientation.value();
+		for (const Atom& corner : A_rel_to_B) {
+			Atom corner_rel_to_COM { corner.m_atom_type, minimumImage(corner.m_position - COM_rel_to_B) };
+			double angle { getAngle(cell_matrix*corner_rel_to_COM.m_position) };
+			(corner_rel_to_COM.m_position[1] < 0 ? atoms_lower : atoms_upper).emplace_back(corner_rel_to_COM, angle);
 		}
-		return std::unexpected("Rotation not set!");
-	}
 
-	explicit LocalUC(const Atoms& A, const Atom& B, const Atoms& O, PhaseFactor phase_factor, DWType DW_type, const Eigen::Matrix3d& cell_matrix, double DW_center_x = 0.5, double tolerance = 1e-3) 
-		: m_B_direct_pbc(B), m_metric(cell_matrix.transpose() * cell_matrix), m_phase_factor(phase_factor), m_type(DW_type)
-	{
-		if (A.size() != 8) {
-			throw std::runtime_error("LocalUC, Expected corners: 8, recieved: " + std::to_string(A.size()));
-		}
-		else if (O.size() != 6) {
-			throw std::runtime_error("LocalUC, Expected O: 6, recieved: " + std::to_string(O.size()));
-		}
-		
-		Atoms A_rel_to_B { 
-			[&A, &B, this](){
-				Atoms temp { A };
-				size_t i {};
-				for (Atom& atom : temp){
-					std::println("Before minimum image, UC id: {}; atom id: {}, coords: {} {} {}", COUNTER, i, atom.m_position.x(), atom.m_position.y(), atom.m_position.z());
-					atom.m_position = minimumImage(atom.m_position - B.m_position);
-					std::println("After atoms min img rel to B, UC id: {}; atom id: {}, coords: {} {} {}", COUNTER, i, atom.m_position.x(), atom.m_position.y(), atom.m_position.z());
-					double dist = atom.m_position.dot(m_metric*atom.m_position);
-					std::println("After atoms min img rel to B, UC id: {}; atom id: {}, dist: {}", COUNTER, i, dist);
+		rebalancePlanes(atoms_upper, atoms_lower);
 
-				}
-				std::println("B pos: {} {} {}", B.m_position.x(),B.m_position.y(),B.m_position.z());
-				std::println();
-				COUNTER++;
-				return temp;
-			}()
+		wrapDirectCoordinates(atoms_upper, B.m_position + COM_rel_to_B);
+		wrapDirectCoordinates(atoms_lower, B.m_position + COM_rel_to_B);
+
+		auto label_half = [](std::vector<std::pair<Atom, double>>& arr) {
+			// label the corners the same way as in pristine UC (no perm)
+			std::ranges::sort(arr, [](auto& pair1, auto& pair2) { 
+				return pair1.second < pair2.second;
+			});
+			std::ranges::rotate(arr, arr.begin()+2);
 		};
 
-		Position COM_rel_to_B = helper::getCOM(A_rel_to_B);
-		//std::println("COM_rel_to_B, UC id: {}, COM: {} {} {}", COUNTER++, COM_rel_to_B.x(), COM_rel_to_B.y(), COM_rel_to_B.z());
-		//std::println();
+		label_half(atoms_upper);
+		label_half(atoms_lower);
 
-		setDomain(B.m_position + COM_rel_to_B, DW_center_x, tolerance);
+		return std::make_pair(atoms_upper, atoms_lower);
+	}
 
+	std::pair<std::vector<std::pair<Atom, double>>, std::vector<std::pair<Atom, double>>> buildTwinCell(const Atoms& A_rel_to_B, const Atom& B, const Position& COM_rel_to_B, const Eigen::Matrix3d& cell_matrix) {
 		std::vector<std::pair<Atom, double>> atoms_upper, atoms_lower;
 		atoms_upper.reserve(4);
 		atoms_lower.reserve(4);
@@ -568,8 +559,11 @@ public:
 
 		std::pair<Atom, double> rightmost_corner_lower { atoms_lower.at(0) };
 		for (const auto& corner : atoms_lower) {
-			double dist { (corner.first.m_position - rightmost_corner_upper.first.m_position).squaredNorm() };
-			if (dist < (rightmost_corner_lower.first.m_position - rightmost_corner_upper.first.m_position).squaredNorm()) {
+			Vector direct_dist { corner.first.m_position - rightmost_corner_upper.first.m_position };
+			double dist { direct_dist.dot(m_metric*direct_dist) };
+			Vector ref_dist { rightmost_corner_lower.first.m_position - rightmost_corner_upper.first.m_position };
+
+			if (dist < ref_dist.dot(m_metric*ref_dist)) {
 				rightmost_corner_lower = corner;
 			}
 		}
@@ -585,13 +579,90 @@ public:
 		wrapDirectCoordinates(atoms_lower, B.m_position + COM_rel_to_B);
 
 		// sort from idx 1 onwarts
-		auto sort_angles = [](auto& arr) { 
+		auto sort_by_angles = [](auto& arr) { 
 			std::ranges::sort(arr.begin()+1, arr.end(), [](auto& pair1, auto& pair2) { 
 				return pair1.second < pair2.second;
-		});};
+			});
+		};
 
-		sort_angles(atoms_upper);
-		sort_angles(atoms_lower);
+		sort_by_angles(atoms_upper);
+		sort_by_angles(atoms_lower);
+
+		return std::make_pair(atoms_upper, atoms_lower);
+	}
+
+public:
+	friend void calculateLatticeConstant(std::vector<LocalUC>& local_UCs);
+
+	double getLatticeConstant() const {
+		return m_global_lattice_constant.value();
+	}
+
+	std::expected<std::tuple<Eigen::Quaterniond, short, Rotation>, std::string> getInitialOrientation() const {
+		if (!m_left_init_orientation || !m_right_init_orientation) {
+			return std::unexpected("Initial rotation not set!");
+		}
+		else if (m_side == DWSide::left || m_side == DWSide::center) {
+			return m_left_init_orientation.value();
+		}
+		else if (m_side == DWSide::right) {
+			return m_right_init_orientation.value();
+		}
+		else {
+			return std::unexpected("DW side unknown, initilization failed");
+		}
+	}
+
+	std::expected<std::tuple<Eigen::Quaterniond, short, Rotation>, std::string> getOrientation() const {
+		if (m_orientation) {
+			return m_orientation.value();
+		}
+		return std::unexpected("Rotation not set!");
+	}
+
+	explicit LocalUC(const Atoms& A, const Atom& B, const Atoms& O, PhaseFactor phase_factor, DWType DW_type, const Eigen::Matrix3d& cell_matrix, Vector DW_center_x /*direct*/ = Vector(0.5, 0, 1), double tolerance /*angstroem*/ = 10)
+		: m_B_direct_pbc(B), m_metric(cell_matrix.transpose() * cell_matrix), m_phase_factor(phase_factor), m_type(DW_type)
+	{
+
+		if (A.size() != 8) {
+			throw std::runtime_error("LocalUC, Expected corners: 8, recieved: " + std::to_string(A.size()));
+		}
+		else if (O.size() != 6) {
+			throw std::runtime_error("LocalUC, Expected O: 6, recieved: " + std::to_string(O.size()));
+		}
+
+		Atoms A_rel_to_B { 
+			[&A, &B](){
+				Atoms temp { A };
+				size_t i {};
+				for (Atom& atom : temp){
+					atom.m_position = minimumImage(atom.m_position - B.m_position);
+
+				}
+				return temp;
+			}()
+		};
+
+		Position COM_rel_to_B = helper::getCOM(A_rel_to_B);
+		m_COM_cart_nopbc = convertCoordinates(B.m_position + COM_rel_to_B, cell_matrix);
+
+		setDomain(B.m_position + COM_rel_to_B, DW_center_x, tolerance, cell_matrix);
+
+		std::vector<std::pair<Atom, double>> atoms_upper, atoms_lower;
+		atoms_upper.reserve(4);
+		atoms_lower.reserve(4);
+
+
+		if (DW_type == DWType::APB) {
+			auto [upper, lower] = buildAPBCell(A_rel_to_B, B, COM_rel_to_B, cell_matrix);
+			atoms_upper = upper;
+			atoms_lower = lower;
+		}
+		else {
+			auto [upper, lower] = buildTwinCell(A_rel_to_B, B, COM_rel_to_B, cell_matrix);
+			atoms_upper = upper;
+			atoms_lower = lower;
+		}
 
 		// fill A and O arrays
 		auto fill_direct_A = [&](auto&& upper, auto&& lower){
@@ -604,7 +675,7 @@ public:
 
 		m_A_direct_pbc.reserve(4);
 		fill_direct_A(atoms_upper, atoms_lower);
-		
+
 		// sort O top, bottom, ....
 		Atoms O_COM_centered { 
 			[&](){
@@ -620,7 +691,7 @@ public:
 		// wrap O back to direct with pbc
 		wrapDirectCoordinates(O_B_centered_pairs, B.m_position + COM_rel_to_B);
 		m_O_direct_pbc = O_B_centered_pairs;
-		
+
 		// get cartesian coordinates without pbc
 		m_A_cart_nopbc.reserve(4);
 		m_O_cart_nopbc.reserve(3);
@@ -638,7 +709,23 @@ public:
 		fill_cart(m_A_direct_pbc, m_A_cart_nopbc);
 		fill_cart(m_O_direct_pbc, m_O_cart_nopbc);
 		m_B_cart_nopbc = Atom(m_B_direct_pbc.m_atom_type, get_cart_pos_nowrap(B, ref_for_unwrap, cell_matrix));
-		m_COM_cart_nopbc = convertCoordinates(B.m_position + COM_rel_to_B, cell_matrix);
+
+		std::vector<double> lattice_dists;
+		lattice_dists.reserve(12);
+
+		for (size_t i {}; i < m_A_cart_nopbc.size(); i++) {
+			double dist;
+			size_t j { (i+1)%m_A_cart_nopbc.size() };
+
+			dist = (m_A_cart_nopbc.at(i).first.m_position - m_A_cart_nopbc.at(j).first.m_position).norm();
+			lattice_dists.push_back(dist);
+			dist = (m_A_cart_nopbc.at(i).second.m_position - m_A_cart_nopbc.at(j).second.m_position).norm();
+			lattice_dists.push_back(dist);
+			dist = (m_A_cart_nopbc.at(i).first.m_position - m_A_cart_nopbc.at(i).second.m_position).norm();
+			lattice_dists.push_back(dist);
+		}
+
+		m_local_lattice_constant = std::accumulate(lattice_dists.begin(), lattice_dists.end(), 0.0) / lattice_dists.size();
 	}
 
 	void updateInitialOrientation(const std::tuple<Eigen::Quaterniond, short, Rotation>& orientation) {
@@ -654,14 +741,17 @@ public:
 		return std::make_pair(m_left_init_orientation.value(), m_right_init_orientation.value());
 	}
 
+
 	std::expected<void, std::string> setInitialOrientation(const std::tuple<Eigen::Quaterniond, short, Rotation>& orientation) { 
 		// orientation short: perm num, Rotation: perm dir, Quaternion: rotation of permuted unit cell
-		if (m_side == DWSide::center) {
-			return std::unexpected("Cell in DW center!"); 
+		if (m_type == DWType::APB) {
+			m_right_init_orientation = std::make_tuple(Eigen::Quaterniond(1, 0, 0, 0), 0, Rotation::None);
+			m_left_init_orientation = m_right_init_orientation;
+			return {};
 		}
 
-		if (m_left_init_orientation && m_right_init_orientation) {
-			return std::unexpected("Initial Orientation already set!");
+		if (m_side == DWSide::center) {
+			return std::unexpected("Cell in DW center!"); 
 		}
 
 		const Eigen::Quaterniond& quaternion { std::get<0>(orientation) };
@@ -674,7 +764,6 @@ public:
 			return angle < 0 ? angle+2*M_PI : angle; // get the angle of rotated z axis around y axis
 		}() };
 
-		// for APBs take into account that z axis remains unchanged, this function is wrong then
 		// local quadrant
 		bool quadrant_2 { M_PI/2 < angle && angle < M_PI };
 		bool quadrant_4 { 3*M_PI/2 < angle && angle < 2*M_PI };
@@ -737,7 +826,7 @@ public:
 		// rotate ex
 		ex = unit_quaternion*ex;
 		ez = unit_quaternion*ez;
-		
+
 		std::pair<size_t, double> projection_z { };
 		for (size_t i { 1 }; i < m_O_cart_nopbc.size(); i++) {
 			Vector pair_vector { m_O_cart_nopbc.at(i).first.m_position - m_O_cart_nopbc.at(i).second.m_position };
@@ -782,12 +871,11 @@ public:
 	short getPhaseFactor() const {
 		return m_phase_factor.value() == PhaseFactor::positive ? 1 : -1;
 	}
-	
 
-	inline void calculateLocalOP() {
+	void calculateLocalOP() {
 		// pass uncentered unit cell
 		// centered at origin, ey into plane, sequence: Sr front lower left, Ti, O front, O bottom, O left
-		const Eigen::Quaterniond& unit_quaternion { std::get<0>(getOrientation().value()) };
+		const Eigen::Quaterniond unit_quaternion { std::get<0>(getOrientation().value()) };
 		const short permutation_number { std::get<1>(getOrientation().value()) };
 		const UnitCell::Rotation permutation_direction { std::get<2>(getOrientation().value()) };
 
@@ -796,32 +884,30 @@ public:
 		Vector ey { 0, 1, 0 };
 		Vector ez { 0, 0, 1 };
 
-		Vector ex_rot { unit_quaternion*ex };
-		Vector ey_rot { unit_quaternion*ey };
-		Vector ez_rot { unit_quaternion*ez };
-		
-		Eigen::VectorXd phonon_pol_x_rot(15); // { 0, 0, 0,   0, 0, 0,   0, 0, 1,   0, -1, 0,   0,  0, 0 }
-		Eigen::VectorXd phonon_pol_y_rot(15); // { 0, 0, 0,   0, 0, 0,   0, 0, 0,  -1,  0, 0,   0,  0, 1 }
-		Eigen::VectorXd phonon_pol_z_rot(15); // { 0, 0, 0,   0, 0, 0,   1, 0, 0,   0,  0, 0,   0, -1, 0 }
+		Eigen::VectorXd phonon_pol_x(15);
+		Eigen::VectorXd phonon_pol_y(15);
+		Eigen::VectorXd phonon_pol_z(15);
 
-		phonon_pol_x_rot << zeros, zeros, ez_rot, -ey_rot, zeros;
-		phonon_pol_y_rot << zeros, zeros, zeros, -ex_rot, ez_rot;
-		phonon_pol_z_rot << zeros, zeros, ex_rot, zeros, -ey_rot;
-		phonon_pol_x_rot.normalize();
-		phonon_pol_y_rot.normalize();
-		phonon_pol_z_rot.normalize();
+		phonon_pol_x << zeros, zeros, -ez, ey, zeros;
+		phonon_pol_y << zeros, zeros, zeros, -ex, ez;
+		phonon_pol_z << zeros, zeros, ex, zeros, -ey;
 
+		phonon_pol_x.normalize();
+		phonon_pol_y.normalize();
+		phonon_pol_z.normalize();
 
-		UnitCell reference_UC_rotated { UnitCell(AtomType::Sr, AtomType::Ti) };
-		reference_UC_rotated.RotateUC(unit_quaternion, permutation_number, permutation_direction);
+		// rotate local centered UC into global frame
+		UnitCell reference_UC { UnitCell(AtomType::Sr, AtomType::Ti, m_global_lattice_constant.value()) };
+		reference_UC.RotateUC(Eigen::Quaterniond(1,0,0,0), permutation_number, permutation_direction);
 		LocalUC local_UC_centered { getCenteredUC() };
+		local_UC_centered.RotateUC(unit_quaternion.conjugate());
 
 		double m_Sr { ATOM_MASSES_U.at(0) };
 		double m_Ti { ATOM_MASSES_U.at(1) };
 		double m_O { ATOM_MASSES_U.at(2) };
 		double total_mass { m_Sr + m_Ti + 3*m_O };
 
-		UnitCell::Displacements displacements { local_UC_centered - reference_UC_rotated };
+		UnitCell::Displacements displacements { local_UC_centered - reference_UC };
 		Vector Sr_displacement_mass_weighted { sqrt(m_Sr/total_mass)*displacements.m_A_displacements.at(0).first };
 		Vector Ti_displacement_mass_weighted { sqrt(m_Ti/total_mass)*displacements.m_B_displacement };
 		Vector O_front_displacement_mass_weighted { sqrt(m_O/total_mass)*displacements.m_O_displacements.at(0).first };
@@ -830,31 +916,104 @@ public:
 
 		Eigen::VectorXd mass_weighted_displacements(15);
 		mass_weighted_displacements << Sr_displacement_mass_weighted,
-									   Ti_displacement_mass_weighted,
-									   O_front_displacement_mass_weighted,
-									   O_bottom_displacement_mass_weighted,
-									   O_left_displacement_mass_weighted;
+			Ti_displacement_mass_weighted,
+			O_front_displacement_mass_weighted,
+			O_bottom_displacement_mass_weighted,
+			O_left_displacement_mass_weighted;
 
-		double phi_1 { mass_weighted_displacements.dot(phonon_pol_x_rot) };
-		double phi_2 { mass_weighted_displacements.dot(phonon_pol_y_rot) };
-		double phi_3 { mass_weighted_displacements.dot(phonon_pol_z_rot) };
+		Vector phi {};
+		phi.x() = mass_weighted_displacements.dot(phonon_pol_x);
+		phi.y() = mass_weighted_displacements.dot(phonon_pol_y);
+		phi.z() = mass_weighted_displacements.dot(phonon_pol_z);
 
-		Vector phi { phi_1, phi_2, phi_3 };
-		short phase_factor {getPhaseFactor()};
-
-		Eigen::Matrix3d R;
-		R.col(0) = ex_rot;
-		R.col(1) = ey_rot;
-		R.col(2) = ez_rot;
+		short phase_factor { getPhaseFactor() };
 
 		m_local_OP_local_frame = phase_factor*phi;
-		m_local_OP_global_frame = phase_factor*(R.inverse()*phi);
+		m_local_OP_global_frame = unit_quaternion*(phase_factor*phi);
 	}
 
-	//
-	inline void getLocalPolarization(/*, Tensor BEC*/);
+	void calculateLocalPolarization(/*const Eigen::Matrix3d& BEC_Sr, const Eigen::Matrix3d& BEC_Ti, const Eigen::Matrix3d& BEC_O*/) {
+		const Eigen::Quaterniond unit_quaternion { std::get<0>(getOrientation().value()) };
+		const short permutation_number { std::get<1>(getOrientation().value()) };
+		const UnitCell::Rotation permutation_direction { std::get<2>(getOrientation().value()) };
+		constexpr double elementary_charge { 1.602176634e-19 };
+
+		UnitCell reference_UC { UnitCell(AtomType::Sr, AtomType::Ti, m_global_lattice_constant.value()) };
+		reference_UC.RotateUC(Eigen::Quaterniond(1,0,0,0), permutation_number, permutation_direction);
+		LocalUC local_UC_centered { getCenteredUC() };
+		local_UC_centered.RotateUC(unit_quaternion.conjugate());
+
+		Displacements displacements { local_UC_centered - reference_UC };
+
+		double Z_Sr = 2.54, Z_Ti = 7.12, Z_Op = -5.66, Z_On = -2.0;
+
+		Eigen::Matrix3d BEC_Sr;
+		Eigen::Matrix3d BEC_Ti;
+		Eigen::Matrix3d BEC_Ox;
+		Eigen::Matrix3d BEC_Oy;
+		Eigen::Matrix3d BEC_Oz;
+
+		BEC_Sr << Z_Sr, 0, 0,
+			0, Z_Sr, 0,
+			0, 0, Z_Sr;
+
+		BEC_Ti << Z_Ti, 0, 0,
+			0, Z_Ti, 0,
+			0, 0, Z_Ti;
+
+		BEC_Ox << Z_Op, 0, 0,
+			0, Z_On, 0,
+			0, 0, Z_On;
+
+		BEC_Oy << Z_On, 0, 0,
+			0, Z_Op, 0,
+			0, 0, Z_On;
+
+		BEC_Oz << Z_On, 0, 0,
+			0, Z_On, 0,
+			0, 0, Z_Op;
+
+		auto toSIUnits = [](auto& displacements) {
+			for (auto& [first, second] : displacements) {
+				first *= 1e-10;
+				second *= 1e-10;
+			}
+		};
+
+		toSIUnits(displacements.m_A_displacements);
+		displacements.m_B_displacement *= 1e-10;
+		toSIUnits(displacements.m_O_displacements);
+
+		Vector polarization { Vector::Zero() };
+
+		for (auto& [first, second] : displacements.m_A_displacements) {
+			polarization.array() += (BEC_Sr*first).array();
+			polarization.array() += (BEC_Sr*second).array();
+		}
+		polarization.array() += (BEC_Ti*displacements.m_B_displacement).array();
+		polarization.array() += (BEC_Oy*displacements.m_O_displacements.at(0).first).array();
+		polarization.array() += (BEC_Oz*displacements.m_O_displacements.at(1).first).array();
+		polarization.array() += (BEC_Ox*displacements.m_O_displacements.at(2).first).array();
+		polarization.array() += (BEC_Oy*displacements.m_O_displacements.at(0).second).array();
+		polarization.array() += (BEC_Oz*displacements.m_O_displacements.at(1).second).array();
+		polarization.array() += (BEC_Ox*displacements.m_O_displacements.at(2).second).array();
+
+		polarization *= elementary_charge/(reference_UC.m_cell_volume * std::pow(1e-10, 3));
+
+		m_local_polarization_local_frame = polarization;
+		m_local_polarization_global_frame = unit_quaternion*polarization;
+	}
 
 };
+
+inline void calculateLatticeConstant(std::vector<LocalUC>& local_UCs) {
+	double sum = std::accumulate(local_UCs.begin(), local_UCs.end(), 0.0, [](double acc, const LocalUC& local_UC) {
+		return acc + local_UC.m_local_lattice_constant;
+	});
+	
+	local_UCs.at(0).m_global_lattice_constant = sum/local_UCs.size();
+}
+
 
 inline double getSqDistance(const Vector& r, const std::optional<Eigen::Matrix3d>& cell_matrix = std::nullopt) {
 	if (!cell_matrix) {
@@ -879,21 +1038,26 @@ inline Eigen::Vector3d convertCoordinates(const Position &pos, const Eigen::Matr
 }
 
 inline double getMinimumImageSqDistance(const Atom& atom1, 
-						  const Atom& atom2, 
-						  const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt) {
+										const Atom& atom2, 
+										const bool minimum_image = true,
+										const std::optional<Eigen::Matrix3d> &cell_matrix = std::nullopt) {
 
 	Vector dr { atom2.m_position - atom1.m_position };
-	dr.array() -= (dr.array() + 0.5 - 1e-12).floor();
+
+	if (minimum_image) {
+		dr.array() -= (dr.array() + 0.5 - 1e-12).floor();
+	}
 
 	return getSqDistance(dr, cell_matrix);
 }
 
 inline std::expected<NNIds, std::string> findNearestN(const Atom& reference_atom, 
-														   const Atoms& atom_arr, 
-														   const size_t n, 
-														   const std::optional<size_t> exclude_idx,
-														   const std::optional<Eigen::Matrix3d>& cell_matrix = std::nullopt, 
-														   const bool sort = false) {
+													  const Atoms& atom_arr, 
+													  const size_t n, 
+													  const std::optional<size_t> exclude_idx,
+													  const std::optional<Eigen::Matrix3d>& cell_matrix = std::nullopt, 
+													  const bool wrap = true,
+													  const bool sort = false) {
 
 	if (n > atom_arr.size()) {
 		return std::unexpected("n cannot exceed size of atom_arr!");
@@ -918,12 +1082,33 @@ inline std::expected<NNIds, std::string> findNearestN(const Atom& reference_atom
 			continue;
 		}
 
-		nearest_neighbors.emplace_back(idx++, getMinimumImageSqDistance(reference_atom, other_atom, cell_matrix));
+		if (wrap) {
+			nearest_neighbors.emplace_back(idx++, getMinimumImageSqDistance(reference_atom, other_atom, true, cell_matrix));
+		}
+		else {
+			nearest_neighbors.emplace_back(idx++, getMinimumImageSqDistance(reference_atom, other_atom, false, cell_matrix));
+		}
 	}
-	
-	std::ranges::nth_element(nearest_neighbors, nearest_neighbors.begin() + n, [](const auto &pair1, const auto &pair2){
-		return pair1.second < pair2.second;
-	});
+
+	auto minDistance = [](const auto &pair1, const auto &pair2) { 
+		return pair1.second < pair2.second; 
+	};
+
+
+	if (wrap) {
+		std::ranges::nth_element(nearest_neighbors, nearest_neighbors.begin() + n, minDistance);
+		nearest_neighbors.resize(n);
+	}
+	else {
+		std::ranges::partial_sort(nearest_neighbors, nearest_neighbors.begin()+n, minDistance);
+
+		size_t id {};
+		double cur_dist { nearest_neighbors.at(0).second };
+		while (nearest_neighbors.at(id).second < cur_dist + 1.5) {
+			id++;
+		}
+		nearest_neighbors.resize(id);
+	}
 
 	if (sort) {
 		std::ranges::sort(nearest_neighbors.begin(), nearest_neighbors.begin() + n, [](const auto &p1, const auto &p2){
@@ -931,7 +1116,6 @@ inline std::expected<NNIds, std::string> findNearestN(const Atom& reference_atom
 		});
 	}
 
-	nearest_neighbors.resize(n);
 	return nearest_neighbors;
 }
 
@@ -952,7 +1136,7 @@ inline Eigen::Matrix3d getRotationMatrix(const Eigen::Quaterniond& unit_quaterni
 	double q1 = unit_quaternion.x();
 	double q2 = unit_quaternion.y();
 	double q3 = unit_quaternion.z();
-	 
+
 	double sq_q0 = pow(q0, 2);
 	double sq_q1 = pow(q1, 2);
 	double sq_q2 = pow(q2, 2);
@@ -960,14 +1144,14 @@ inline Eigen::Matrix3d getRotationMatrix(const Eigen::Quaterniond& unit_quaterni
 
 	Eigen::Matrix3d rotation_matrix;
 	rotation_matrix << sq_q0+sq_q1-0.5,  q1*q2-q0*q3,    q1*q3+q0*q2,
-					     q1*q2+q0*q3,  sq_q0+sq_q2-0.5,  q2*q3-q0*q1,
-					     q1*q3-q0*q2,    q2*q3+q0*q1,  sq_q0+sq_q3-0.5;
+		q1*q2+q0*q3,  sq_q0+sq_q2-0.5,  q2*q3-q0*q1,
+		q1*q3-q0*q2,    q2*q3+q0*q1,  sq_q0+sq_q3-0.5;
 
 	return 2*rotation_matrix;
 }
 
-inline std::vector<LocalUC::PhaseFactor> findPhaseFactor(const Atoms& B, const std::vector<NNIds>& B_NNs) {
-	// two coloring BFS algorithm to traverse the lattice as a spanning graph and setting the bloch wave phase factor accordingly
+inline std::vector<LocalUC::PhaseFactor> findPhaseFactor(const Atoms& B, const std::vector<NNIds> B_NNs) {
+	// two coloring BFS algorithm to traverse the lattice as a spanning graph and setting the bloch wave phase factor accordingly, omitting pbc wrapping
 	std::vector<int> phase_factors(B.size(), 0);
 	std::deque<size_t> queue;
 
@@ -982,20 +1166,20 @@ inline std::vector<LocalUC::PhaseFactor> findPhaseFactor(const Atoms& B, const s
 				queue.push_back(current_child_id);
 				phase_factors.at(current_child_id) = -1*phase_factors.at(current_parent_id);
 			}
-			if (phase_factors.at(current_child_id) == phase_factors.at(current_parent_id)) {
-				throw std::runtime_error("Neighboring cells have the same phase_factor!");
+			if (phase_factors.at(current_parent_id) == phase_factors.at(current_child_id)) {
+				throw std::runtime_error("neighboring UCs have same sign");
 			}
 		}
 	}
 
 	std::vector<LocalUC::PhaseFactor> out; out.reserve(B.size());
 	for (size_t i { }; i < B.size(); i++) {
-		out.emplace_back(phase_factors.at(i) > 0 ? LocalUC::PhaseFactor::positive : LocalUC::PhaseFactor::negative);
+		out.emplace_back(phase_factors.at(i) == 1 ? LocalUC::PhaseFactor::positive : LocalUC::PhaseFactor::negative);
 	}
 
 	return out;
 }
-size_t ID = 0;
+
 inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const LocalUC &local_UC, 
 										  const std::tuple<Eigen::Quaterniond, short, UnitCell::Rotation>& init_orientation, double step_size = 0.0005 ) {
 	constexpr double threshold { 1e-12 };
@@ -1033,23 +1217,23 @@ inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const Loc
 			// order q1,q2,q3,q0 because Eigen stores the coefficient this way
 			case 0:
 				grad_R << 2*q1, q2,  q3,
-						   q2,   0, -q0,
-						   q3,  q0,   0;
+					q2,   0, -q0,
+					q3,  q0,   0;
 				return 2*grad_R;
 			case 1:
 				grad_R <<  0,  q1,  q0,
-						  q1, 2*q2, q3,
-						 -q0,  q3,   0;
+					q1, 2*q2, q3,
+					-q0,  q3,   0;
 				return 2*grad_R;
 			case 2:
 				grad_R <<  0, -q0,  q1,
-						  q0,   0,  q2,
-						  q1,  q2, 2*q3;
+					q0,   0,  q2,
+					q1,  q2, 2*q3;
 				return 2*grad_R;
 			case 3:
 				grad_R << 2*q0, -q3,   q2,
-						   q3,  2*q0, -q1,
-						  -q2,   q1,  2*q0;
+					q3,  2*q0, -q1,
+					-q2,   q1,  2*q0;
 				return 2*grad_R;
 			default:
 				std::unreachable();
@@ -1086,11 +1270,12 @@ inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const Loc
 		(double cur_sq_dist, const Eigen::Quaterniond& q, const Eigen::Quaterniond& grad_L, double step_size) {
 			Eigen::Quaterniond best_q { q };
 			double best_dist { cur_sq_dist };
+			double cur_step_size { step_size*0.01 };
 			for (size_t i { 0 }; i <= 100; i++) {
-				double new_step_size = std::pow(1.1, i) * step_size*0.01;
+				double new_step_size = std::pow(1.1, i) * cur_step_size;
 				double new_lambda { lambda(q, grad_L, new_step_size) };
 				Eigen::Vector4d delta { new_step_size*grad_L.coeffs() + new_lambda*q.coeffs() };
-				// forward search
+				// bidirectional search
 				Eigen::Quaterniond new_q_f { q.coeffs() - delta };
 				Eigen::Quaterniond new_q_b { q.coeffs() + delta };
 				new_q_f.normalize();
@@ -1111,7 +1296,7 @@ inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const Loc
 				}
 			}
 			return std::make_pair(best_q, best_dist);
-	};
+		};
 
 	size_t counter { };
 	while(cur_iter++ < max_iter) {
@@ -1130,31 +1315,17 @@ inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const Loc
 		current_unit_quaternion = new_unit_quaternion;
 		cur_sq_dist = new_sq_dist;
 	}
-	Eigen::Quaterniond temp { (current_unit_quaternion*initial_quaternion).normalized() };
-	std::string side;
-	if (local_UC.m_side == LocalUC::DWSide::right) {
-		side = "r";
-	}
-	else if (local_UC.m_side == LocalUC::DWSide::left) {
-		side = "l";
-	}
-	else if (local_UC.m_side == LocalUC::DWSide::center) {
-		side = "c";
-	}
-
-	Position b_atom { local_UC.m_B_cart_nopbc.m_position };
-	//std::println("UC id: {}; DW side: {}; B Atom coords: x={}, y={}, z={}; Quaternion: x={}, y={}, z={}, w={}; best sq dist: {}", ID++, side, b_atom.x(), b_atom.y(), b_atom.z(), temp.x(), temp.y(),temp.z(),temp.w(), cur_sq_dist);
 
 	return (current_unit_quaternion*initial_quaternion).normalized();
 }
 
 inline void findInitialOrientation(LocalUC& local_UC, double step_size) {
 	const LocalUC pseudo_unit_cell_centered { local_UC.getCenteredUC() };
-	
+
 	// vector with the 4 possible corner permutations, each corresponding to a pi/2 rotation of the local z axis around the y+ axis
-	const std::vector<UnitCell> pristine_UC_perm { []() {
+	const std::vector<UnitCell> pristine_UC_perm { [&local_UC]() {
 		std::vector<UnitCell> temp; temp.reserve(4);
-		UnitCell base { AtomType::Sr, AtomType::Ti, +1, { 1, 0, 0, 0 } };
+		UnitCell base { AtomType::Sr, AtomType::Ti, +1, { 1, 0, 0, 0 }, local_UC.getLatticeConstant() };
 		for (size_t i { }; i < 4; i++) {
 			UnitCell base_rot { base.getRotatedUC( Eigen::Quaterniond( 1, 0, 0, 0 ), static_cast<short>(i), UnitCell::Rotation::left) };
 			temp.emplace_back(base_rot);
@@ -1163,33 +1334,42 @@ inline void findInitialOrientation(LocalUC& local_UC, double step_size) {
 	}() };
 
 	std::tuple<double, Eigen::Quaterniond, size_t> best_uc { std::numeric_limits<double>::infinity(), Eigen::Quaterniond(1,0,0,0), 0 }; // dist front O and corresponding uc
-	short permutation_number {};
-	for (std::size_t i { }; i<4; i++) {
+
+	if (local_UC.m_type == DWType::APB) {
 		std::tuple<Eigen::Quaterniond, short, UnitCell::Rotation> initial_orientation { { 1, 0, 0, 0 }, 0, UnitCell::Rotation::None };
-		// fit each permuted pristine uc, get q, measure O front and pick best, don't rotate when already permuted
-		Eigen::Quaterniond unit_quaternion { gradientDescent(pristine_UC_perm.at(i), local_UC, initial_orientation, step_size) }; 
+		Eigen::Quaterniond unit_quaternion { gradientDescent(pristine_UC_perm.at(0), local_UC, initial_orientation, step_size) }; 
 
-		const UnitCell pristine_rot { pristine_UC_perm.at(i).getRotatedUC(unit_quaternion) };
-		const Position& pristine_uc_top_O { pristine_rot.m_O_cart_nopbc.at(0).first.m_position };
-		const Position& pseudo_unit_cell_uc_top_O { pseudo_unit_cell_centered.m_O_cart_nopbc.at(0).first.m_position };
-		double cur_top_O_sq_distance { (pristine_uc_top_O - pseudo_unit_cell_uc_top_O).squaredNorm() };
+		std::get<0>(best_uc) = 0;
+		std::get<1>(best_uc) = unit_quaternion;
+		std::get<2>(best_uc) = 0;
+	}
+	else {
+		for (std::size_t i { }; i<4; i++) {
+			std::tuple<Eigen::Quaterniond, short, UnitCell::Rotation> initial_orientation { { 1, 0, 0, 0 }, 0, UnitCell::Rotation::None };
+			// fit each permuted pristine uc, get q, measure O front and pick best, don't rotate when already permuted
+			Eigen::Quaterniond unit_quaternion { gradientDescent(pristine_UC_perm.at(i), local_UC, initial_orientation, step_size) }; 
 
-		// update best distance
-		if (cur_top_O_sq_distance < std::get<0>(best_uc)) {
-			std::get<0>(best_uc) = cur_top_O_sq_distance;
-			std::get<1>(best_uc) = unit_quaternion;
-			std::get<2>(best_uc) = i;
+			const UnitCell pristine_rot { pristine_UC_perm.at(i).getRotatedUC(unit_quaternion) };
+			const Position& pristine_UC_front_O { pristine_rot.m_O_cart_nopbc.at(0).first.m_position };
+			const Position& pseudo_UC_front_O { pseudo_unit_cell_centered.m_O_cart_nopbc.at(0).first.m_position };
+			double cur_front_O_sq_distance { (pristine_UC_front_O - pseudo_UC_front_O).squaredNorm() };
+
+			if (cur_front_O_sq_distance < std::get<0>(best_uc)) {
+				std::get<0>(best_uc) = cur_front_O_sq_distance;
+				std::get<1>(best_uc) = unit_quaternion;
+				std::get<2>(best_uc) = i;
+			}
 		}
 	}
 
 	Eigen::Quaterniond unit_quaternion { std::get<1>(best_uc) };
 	std::pair<short, UnitCell::Rotation> permutation = pristine_UC_perm.at(std::get<2>(best_uc)).getInitialPermutation();
 	std::tuple<Eigen::Quaterniond, short, UnitCell::Rotation> final_orientation = std::make_tuple(unit_quaternion, permutation.first, permutation.second);
-	
+
 	std::expected<void, std::string> res = local_UC.setInitialOrientation(final_orientation);
 
 	if (!res) {
-		throw std::runtime_error("set initial Orientation failed");
+		throw std::runtime_error("set initial Orientation failed: "+res.error());
 	}
 
 	local_UC.m_orientation = final_orientation;
@@ -1197,146 +1377,317 @@ inline void findInitialOrientation(LocalUC& local_UC, double step_size) {
 }
 
 inline Positions loadPosFromFile(std::string filename,
-                                 uint head = 0,
-                                 long tail_start = -1,
-                                 const char* filetype = "POSCAR")
+								 uint head = 0,
+								 long tail_start = -1,
+								 const char* filetype = "POSCAR")
 {
-    if (std::strcmp(filetype, "POSCAR") != 0) {
-        throw std::runtime_error("Filetype not supported. (currently POSCAR only)");
-    }
+	if (std::strcmp(filetype, "POSCAR") != 0) {
+		throw std::runtime_error("Filetype not supported. (currently POSCAR only)");
+	}
 
-    std::ifstream file{filename};
-    if (!file.is_open()) {
-        throw std::runtime_error("Failed loading file: " + filename);
-    }
+	std::ifstream file{filename};
+	if (!file.is_open()) {
+		throw std::runtime_error("Failed loading file: " + filename);
+	}
 
-    std::string line;
-    for (uint i = 0; i < head && std::getline(file, line); ++i) { /* skip */ }
+	std::string line;
+	for (uint i = 0; i < head && std::getline(file, line); ++i) { /* skip */ }
 
-    Positions positions;
-    long line_num = static_cast<long>(head);
+	Positions positions;
+	long line_num = static_cast<long>(head);
 
-    while (std::getline(file, line)) {
-        ++line_num;
-        if (tail_start > 0 && line_num >= tail_start) break;
+	while (std::getline(file, line)) {
+		++line_num;
+		if (tail_start > 0 && line_num >= tail_start) break;
 
-        std::istringstream iss(line);
-        double x, y, z;
-        if (!(iss >> x >> y >> z)) {
-            continue;
-        }
-        positions.emplace_back(x, y, z);
-    }
+		std::istringstream iss(line);
+		double x, y, z;
+		if (!(iss >> x >> y >> z)) {
+			continue;
+		}
+		positions.emplace_back(x, y, z);
+	}
 
-    return positions;
+	return positions;
 }
 
-// Add near the top of polcalc.hpp
 struct POSCARData {
-    Eigen::Matrix3d m_cell;              // columns are a, b, c
-    Positions       m_positions_direct;  // fractional coordinates
-    std::vector<std::string> m_symbols;
-    std::vector<size_t>       m_counts;
+	Eigen::Matrix3d m_cell;              // columns are a, b, c
+	Positions       m_positions_direct;  // fractional coordinates
+	std::vector<std::string> m_symbols;
+	std::vector<size_t>       m_counts;
 };
 
-// Robust VASP4/5 parser (handles optional symbols line and Selective dynamics)
+struct XDATFrame {
+	long long step{}; 
+	POSCARData data; 
+};
+
+struct XDATParseOptions {
+	bool wrap_frac = false;
+};
+
+namespace xdatcar_detail {
+inline std::vector<std::string> split_ws(const std::string &s) {
+	std::vector<std::string> out; out.reserve(16);
+	std::string cur; cur.reserve(s.size());
+	for (char c: s) {
+		if (std::isspace(static_cast<unsigned char>(c))) {
+			if (!cur.empty()) { out.push_back(cur); cur.clear(); }
+		} else cur.push_back(c);
+	}
+	if (!cur.empty()) out.push_back(cur);
+	return out;
+}
+inline bool all_int(const std::vector<std::string>& v) {
+	if (v.empty()) return false;
+	for (auto &s: v) {
+		char *e=nullptr; std::strtoll(s.c_str(), &e, 10); if (!(e && *e=='\0')) return false;
+	}
+	return true;
+}
+inline void wrap01(Eigen::Vector3d &f) {
+	for (int i=0;i<3;++i) f[i] -= std::floor(f[i]);
+}
+inline std::string lower(std::string s){ for(char &c:s) c=(char)std::tolower((unsigned char)c); return s; }
+
+inline bool parse_config_header(const std::string& line, bool &is_direct, long long &step_out) {
+	auto low = lower(line);
+	if (low.find("configuration") == std::string::npos) return false;
+	is_direct = low.find("direct") != std::string::npos;
+	
+	auto eq = low.find('=');
+	if (eq != std::string::npos) {
+		std::string tail = low.substr(eq+1);
+		// strip spaces
+		size_t i=0; while (i<tail.size() && std::isspace((unsigned char)tail[i])) ++i;
+		long long v=0; bool any=false;
+		for (; i<tail.size(); ++i) {
+			if (std::isdigit((unsigned char)tail[i])) { any=true; v = v*10 + (tail[i]-'0'); }
+			else break;
+		}
+		if (any) { step_out = v; return true; }
+	}
+
+	step_out = -1; return true;
+}
+}
+
+inline std::expected<std::vector<XDATFrame>, std::string>
+readXDATCAR(const std::string& filename, const XDATParseOptions& opt = {})
+{
+	using namespace xdatcar_detail;
+	std::ifstream in(filename);
+	if (!in) return std::unexpected("Failed loading file: " + filename);
+
+	std::string line;
+
+	if (!std::getline(in, line)) return std::unexpected("Unexpected EOF at comment");
+
+	if (!std::getline(in, line)) return std::unexpected("Unexpected EOF at scale");
+	double scale = 1.0; {
+		auto toks = split_ws(line); if (toks.empty()) return std::unexpected("Bad scale line");
+		scale = std::stod(toks[0]);
+	}
+
+	auto read_vec = [&](Eigen::Vector3d& v)->bool{
+		if (!std::getline(in, line)) return false; std::istringstream iss(line); return (bool)(iss>>v[0]>>v[1]>>v[2]); };
+	Eigen::Vector3d a,b,c; if (!read_vec(a) || !read_vec(b) || !read_vec(c))
+		return std::unexpected("Unexpected EOF at lattice vectors");
+	Eigen::Matrix3d cell; cell.col(0) = scale*a; cell.col(1) = scale*b; cell.col(2) = scale*c;
+
+	if (!std::getline(in, line)) return std::unexpected("Unexpected EOF after lattice");
+	auto toks = split_ws(line);
+
+	std::vector<std::string> symbols;
+	std::vector<size_t> counts;
+
+	if (all_int(toks)) {
+		counts.reserve(toks.size());
+		for (auto &t : toks) counts.push_back((size_t)std::stoull(t));
+		symbols.reserve(counts.size());
+		for (size_t i=0;i<counts.size();++i) symbols.push_back("S" + std::to_string(i+1));
+	} else {
+		symbols = toks; 
+		if (!std::getline(in, line)) return std::unexpected("Unexpected EOF at counts line");
+		toks = split_ws(line);
+		if (!all_int(toks)) return std::unexpected("Counts line is not all integers");
+		counts.reserve(toks.size()); for (auto &t : toks) counts.push_back((size_t)std::stoull(t));
+		if (symbols.size() != counts.size())
+			return std::unexpected("Symbols and counts size mismatch");
+	}
+
+	std::streampos after_counts_pos = in.tellg();
+	if (!std::getline(in, line)) return std::unexpected("Unexpected EOF at coordinate header");
+	std::string low = lower(line);
+	if (low.starts_with("s")) { 
+		if (!std::getline(in, line)) return std::unexpected("Unexpected EOF after Selective dynamics");
+		low = lower(line);
+	}
+
+	bool header_direct = false;
+	long long step_from_header = -1;
+	if (parse_config_header(line, header_direct, step_from_header)) {
+	} else if (low.starts_with("d")) {
+		header_direct = true;
+	} else if (low.starts_with("c")) {
+		header_direct = false;
+	} else {
+		in.seekg(after_counts_pos);
+	}
+
+	const size_t n_atoms = [&]{ size_t n=0; for (auto x: counts) n+=x; return n; }();
+	Eigen::Matrix3d invC = cell.inverse();
+
+	std::vector<XDATFrame> frames;
+	frames.reserve(64);
+
+	auto read_one_frame = [&](bool as_direct, long long step_tag)->std::expected<Positions,std::string>{
+		Positions pos; pos.reserve(n_atoms);
+		for (size_t i=0;i<n_atoms; ++i) {
+			if (!std::getline(in, line)) return std::unexpected("Unexpected EOF in coordinates at atom "+std::to_string(i));
+			if (line.empty()) { --i; continue; }
+			std::istringstream iss(line);
+			double x,y,z; if (!(iss>>x>>y>>z)) return std::unexpected("Bad coordinate line at atom "+std::to_string(i));
+			Eigen::Vector3d v(x,y,z);
+			if (!as_direct) v = invC * v;
+			if (opt.wrap_frac) wrap01(v);
+			pos.emplace_back(v);
+		}
+		return pos;
+	};
+
+	if (low.starts_with("d") || low.starts_with("c") || step_from_header>=0) {
+		bool as_direct = (step_from_header>=0) ? header_direct : header_direct; // same flag
+		long long step = (step_from_header>=0) ? step_from_header : 1LL;
+		auto pos = read_one_frame(as_direct, step);
+		if (!pos) return std::unexpected(pos.error());
+		POSCARData pd; pd.m_cell = cell; pd.m_symbols = symbols; pd.m_counts = counts; pd.m_positions_direct = std::move(*pos);
+		frames.push_back(XDATFrame{step, std::move(pd)});
+	}
+
+	while (true) {
+		std::streampos here = in.tellg();
+		if (!std::getline(in, line)) break;
+		if (line.empty()) continue;
+		bool as_direct=false; long long step=-1;
+		if (!parse_config_header(line, as_direct, step)) {
+			in.seekg(here); break;
+		}
+		auto pos = read_one_frame(as_direct, step);
+		if (!pos) return std::unexpected(pos.error());
+		POSCARData pd; pd.m_cell = cell; pd.m_symbols = symbols; pd.m_counts = counts; pd.m_positions_direct = std::move(*pos);
+		frames.push_back(XDATFrame{ step>=0 ? step : (long long)frames.size()+1, std::move(pd)});
+	}
+
+	if (frames.empty()) {
+		auto pos = read_one_frame(true, 1);
+		if (!pos) return std::unexpected(pos.error());
+		POSCARData pd; pd.m_cell = cell; pd.m_symbols = symbols; pd.m_counts = counts; pd.m_positions_direct = std::move(*pos);
+		frames.push_back(XDATFrame{1, std::move(pd)});
+	}
+
+	return frames;
+}
+
+inline std::expected<std::vector<POSCARData>, std::string>
+readXDATCARAsPOSCARFrames(const std::string& filename, const XDATParseOptions& opt = {})
+{
+	auto fr = readXDATCAR(filename, opt);
+	if (!fr) return std::unexpected(fr.error());
+	std::vector<POSCARData> out; out.reserve(fr->size());
+	for (auto &f : *fr) out.push_back(std::move(f.data));
+	return out;
+}
+
 inline std::expected<POSCARData, std::string>
 readPOSCAR(const std::string& filename)
 {
-    std::ifstream in(filename);
-    if (!in) return std::unexpected("Failed loading file: " + filename);
+	std::ifstream in(filename);
+	if (!in) return std::unexpected("Failed loading file: " + filename);
 
-    auto split = [](const std::string& s){
-        std::istringstream iss(s);
-        std::vector<std::string> t; for (std::string w; iss>>w;) t.push_back(w);
-        return t;
-    };
-    auto all_int = [](const std::vector<std::string>& v){
-        if (v.empty()) return false;
-        return std::ranges::all_of(v, [](const std::string& x){
-            char* e=nullptr; std::strtoll(x.c_str(), &e, 10); return e && *e=='\0';
-        });
-    };
+	auto split = [](const std::string& s){
+		std::istringstream iss(s);
+		std::vector<std::string> t; for (std::string w; iss>>w;) t.push_back(w);
+		return t;
+	};
+	auto all_int = [](const std::vector<std::string>& v){
+		if (v.empty()) return false;
+		return std::ranges::all_of(v, [](const std::string& x){
+			char* e=nullptr; std::strtoll(x.c_str(), &e, 10); return e && *e=='\0';
+		});
+	};
 
-    std::string line;
-    // 1) comment
-    if (!std::getline(in, line)) return std::unexpected("Unexpected EOF at comment");
-    // 2) scale
-    if (!std::getline(in, line)) return std::unexpected("Unexpected EOF at scale");
-    double scale = std::stod(split(line).at(0));
+	std::string line;
+	if (!std::getline(in, line)) return std::unexpected("Unexpected EOF at comment");
+	if (!std::getline(in, line)) return std::unexpected("Unexpected EOF at scale");
+	double scale = std::stod(split(line).at(0));
 
-    auto read_vec = [&](Eigen::Vector3d& v)->bool{
-        if (!std::getline(in, line)) return false;
-        std::istringstream iss(line);
-        return static_cast<bool>(iss >> v[0] >> v[1] >> v[2]);
-    };
+	auto read_vec = [&](Eigen::Vector3d& v)->bool{
+		if (!std::getline(in, line)) return false;
+		std::istringstream iss(line);
+		return static_cast<bool>(iss >> v[0] >> v[1] >> v[2]);
+	};
 
-    Eigen::Vector3d a,b,c;
-    if (!read_vec(a) || !read_vec(b) || !read_vec(c))
-        return std::unexpected("Unexpected EOF at lattice vectors");
+	Eigen::Vector3d a,b,c;
+	if (!read_vec(a) || !read_vec(b) || !read_vec(c))
+		return std::unexpected("Unexpected EOF at lattice vectors");
 
-    // Build cell with lattice vectors as COLUMNS
-    Eigen::Matrix3d cell;
-    cell.col(0) = scale * a;
-    cell.col(1) = scale * b;
-    cell.col(2) = scale * c;
+	Eigen::Matrix3d cell;
+	cell.col(0) = scale * a;
+	cell.col(1) = scale * b;
+	cell.col(2) = scale * c;
 
-    // 6) symbols or counts
-    if (!std::getline(in, line)) return std::unexpected("Unexpected EOF at symbols/counts");
-    auto toks = split(line);
-    std::vector<std::string> symbols;
-    std::vector<size_t> counts;
+	if (!std::getline(in, line)) return std::unexpected("Unexpected EOF at symbols/counts");
+	auto toks = split(line);
+	std::vector<std::string> symbols;
+	std::vector<size_t> counts;
 
-    if (all_int(toks)) {
-        // VASP4: counts directly
-        for (auto& t : toks) counts.push_back(static_cast<size_t>(std::stoll(t)));
-    } else {
-        symbols = toks;
-        if (!std::getline(in, line)) return std::unexpected("Missing counts line");
-        auto cts = split(line);
-        if (!all_int(cts)) return std::unexpected("Counts line is not integers");
-        for (auto& t : cts) counts.push_back(static_cast<size_t>(std::stoll(t)));
-    }
+	if (all_int(toks)) {
+		for (auto& t : toks) counts.push_back(static_cast<size_t>(std::stoll(t)));
+	} else {
+		symbols = toks;
+		if (!std::getline(in, line)) return std::unexpected("Missing counts line");
+		auto cts = split(line);
+		if (!all_int(cts)) return std::unexpected("Counts line is not integers");
+		for (auto& t : cts) counts.push_back(static_cast<size_t>(std::stoll(t)));
+	}
 
-    // Optional "Selective dynamics"
-    std::streampos before_coord_type = in.tellg();
-    if (!std::getline(in, line)) return std::unexpected("Missing coordinate type");
-    {
-        auto low = line; std::ranges::transform(low, low.begin(), ::tolower);
-        if (!(low.starts_with("d") || low.starts_with("c"))) {
-            // assume this was "Selective dynamics", read the real coord-type next
-            if (!std::getline(in, line)) return std::unexpected("Missing coordinate type after Selective dynamics");
-        }
-    }
-    std::string coordtype = line;
-    std::string low = coordtype; std::ranges::transform(low, low.begin(), ::tolower);
-    bool direct = low.starts_with("d"); // "Direct" or "Fractional"
+	std::streampos before_coord_type = in.tellg();
+	if (!std::getline(in, line)) return std::unexpected("Missing coordinate type");
+	{
+		auto low = line; std::ranges::transform(low, low.begin(), ::tolower);
+		if (!(low.starts_with("d") || low.starts_with("c"))) {
+			if (!std::getline(in, line)) return std::unexpected("Missing coordinate type after Selective dynamics");
+		}
+	}
+	std::string coordtype = line;
+	std::string low = coordtype; std::ranges::transform(low, low.begin(), ::tolower);
+	bool direct = low.starts_with("d"); 
 
-    size_t n_atoms = 0; for (auto n : counts) n_atoms += n;
+	size_t n_atoms = 0; for (auto n : counts) n_atoms += n;
 
-    Positions pos; pos.reserve(n_atoms);
-    for (size_t i = 0; i < n_atoms; ++i) {
-        if (!std::getline(in, line)) return std::unexpected("Unexpected EOF in coordinates");
-        std::istringstream iss(line);
-        double x,y,z; 
-        if (!(iss >> x >> y >> z))
-            return std::unexpected("Bad coordinate line at atom " + std::to_string(i));
-        pos.emplace_back(x,y,z); // read as given
-    }
+	Positions pos; pos.reserve(n_atoms);
+	for (size_t i = 0; i < n_atoms; ++i) {
+		if (!std::getline(in, line)) return std::unexpected("Unexpected EOF in coordinates");
+		std::istringstream iss(line);
+		double x,y,z; 
+		if (!(iss >> x >> y >> z))
+			return std::unexpected("Bad coordinate line at atom " + std::to_string(i));
+		pos.emplace_back(x,y,z); 
+	}
 
-    // Convert to DIRECT if needed
-    if (!direct) {
-        // r_dir = C^{-1} * r_cart
-        Eigen::Matrix3d invC = cell.inverse();
-        for (auto& p : pos) p = invC * p;
-    }
+	if (!direct) {
+		Eigen::Matrix3d invC = cell.inverse();
+		for (auto& p : pos) p = invC * p;
+	}
 
-    POSCARData out;
-    out.m_cell = cell;
-    out.m_positions_direct = std::move(pos);
-    out.m_symbols = std::move(symbols);
-    out.m_counts = std::move(counts);
-    return out;
+	POSCARData out;
+	out.m_cell = cell;
+	out.m_positions_direct = std::move(pos);
+	out.m_symbols = std::move(symbols);
+	out.m_counts = std::move(counts);
+	return out;
 }
 
 inline std::expected<AtomPositions, std::string> sortPositionsByType(const Positions& positions, 
@@ -1371,8 +1722,9 @@ inline std::expected<AtomPositions, std::string> sortPositionsByType(const Posit
 inline std::expected<std::vector<NNIds>, std::string> getNearestNeighbors(const Atoms& atoms, 
 																		  const Atoms& ref_atoms,
 																		  const size_t n, 
-																		  const std::optional<Eigen::Matrix3d>& cell_matrix) {
-	
+																		  const std::optional<Eigen::Matrix3d>& cell_matrix,
+																		  const bool wrap) {
+
 	std::vector<NNIds> nearest_neighbors;
 	nearest_neighbors.reserve(ref_atoms.size());
 
@@ -1384,7 +1736,7 @@ inline std::expected<std::vector<NNIds>, std::string> getNearestNeighbors(const 
 			exclude_idx = atom_id;
 		}
 
-		auto res = helper::findNearestN(ref_atom, atoms, n, exclude_idx, cell_matrix, false) 
+		auto res = helper::findNearestN(ref_atom, atoms, n, exclude_idx, cell_matrix, wrap, false) 
 			.transform([&nearest_neighbors](auto&& res) { nearest_neighbors.push_back(std::move(res)); });
 
 		if (!res) {
@@ -1417,24 +1769,28 @@ inline std::vector<helper::LocalUC> createLocalUCs(const Atoms& A, const Atoms& 
 		Atoms A_local; A_local.reserve(A_NNIds.size());
 		Atom B_local { B.at(B_id) };
 		Atoms O_local; O_local.reserve(O_NNIds.size());
-		
+
 		fill_atoms(A_NNIds, A, A_local);
 		fill_atoms(O_NNIds, O, O_local);
 
 		local_UCs.emplace_back(std::move(A_local), std::move(B_local), std::move(O_local), phase_factor, DW_type, cell_matrix);
 	}
+
+	calculateLatticeConstant(local_UCs);
+
 	return local_UCs;
 }
 
 
-inline ObservableData calculateObservable(const std::vector<helper::LocalUC>& local_UCs, double threshold = 0.25 /*in angstroem*/) { //different behavior for either P or OP
+inline std::pair<ObservableData, ObservableData> calculateObservable(const std::vector<helper::LocalUC>& local_UCs, double threshold = 1 /*in angstroem*/) { //different behavior for either P or OP
 	std::vector<helper::LocalUC> local_UCs_cp { local_UCs };
 	std::ranges::sort(local_UCs_cp, [](const auto& lhs, const auto& rhs) {
 		return lhs.m_B_cart_nopbc.m_position.x() < rhs.m_B_cart_nopbc.m_position.x();
 	});
 
 	std::vector<bool> used(local_UCs.size(), false);
-	std::vector<std::pair<double, Vectors>> bins; // storing x value (bins) and OP of the Local UC at that position
+	std::vector<std::pair<double, Vectors>> bins_OP; // storing x value (bins) and OP of the Local UC at that position
+	std::vector<std::pair<double, Vectors>> bins_polarization; // storing x value (bins) and Polarization of the Local UC at that position
 
 	// sorting bins
 	while (true) {
@@ -1445,9 +1801,11 @@ inline ObservableData calculateObservable(const std::vector<helper::LocalUC>& lo
 
 		size_t current_id { static_cast<size_t>(std::distance(used.begin(), it_current)) };
 
-		std::pair<double, Vectors> current_bin;
-		double current_pos { local_UCs_cp.at(current_id).m_B_cart_nopbc.m_position.x() };
-		current_bin.second.emplace_back(local_UCs_cp.at(current_id).m_local_OP_global_frame.value());
+		std::pair<double, Vectors> current_bin_OP;
+		std::pair<double, Vectors> current_bin_polarization;
+		double current_pos { local_UCs_cp.at(current_id).m_COM_cart_nopbc.x()};
+		current_bin_OP.second.emplace_back(local_UCs_cp.at(current_id).m_local_OP_global_frame.value());
+		current_bin_polarization.second.emplace_back(local_UCs_cp.at(current_id).m_local_polarization_global_frame.value()); 
 		*it_current = true;
 
 		double current_bin_center { current_pos };
@@ -1462,59 +1820,74 @@ inline ObservableData calculateObservable(const std::vector<helper::LocalUC>& lo
 			if (diff_x > threshold) {
 				break; // because nothing after would fall into the bin anyway
 			}
-			
-			current_bin.second.emplace_back(local_UCs_cp.at(i).m_local_OP_global_frame.value());
+
+			current_bin_OP.second.emplace_back(local_UCs_cp.at(i).m_local_OP_global_frame.value());
+			current_bin_polarization.second.emplace_back(local_UCs_cp.at(i).m_local_polarization_global_frame.value());
 			used.at(i) = true;
 			current_bin_center += new_pos;
 		}
 
-		current_bin.first = current_bin_center / current_bin.second.size();
-		bins.emplace_back(current_bin);
+		current_bin_OP.first = current_bin_center / current_bin_OP.second.size();
+		current_bin_polarization.first = current_bin_center / current_bin_polarization.second.size();
+		bins_OP.emplace_back(current_bin_OP);
+		bins_polarization.emplace_back(current_bin_polarization);
 	}
 
-	ObservableData observable(bins.size());
-	for (auto& pair : bins) {
-		observable.m_bin_center.emplace_back(pair.first);
+	ObservableData observable_OP(bins_OP.size());
+	ObservableData observable_polarization(bins_OP.size());
+
+	for (auto&& [pair_OP, pair_polarization]: std::ranges::views::zip(bins_OP, bins_polarization)) {
+		observable_OP.m_bin_center.emplace_back(pair_OP.first);
+		observable_polarization.m_bin_center.emplace_back(pair_polarization.first);
 	}
 
 	// calculate average and variance
-	for (const auto& [bin_center, obs] : bins) {
-		Vector bin_avg { Vector::Zero() };
-		for (const auto& vec : obs) {
-			bin_avg += vec;	
+	auto avg = [&](const auto& bins, ObservableData& observable) {
+		for (const auto& [bin_center, obs] : bins) {
+			Vector bin_avg { Vector::Zero() };
+			for (const auto& vec : obs) {
+				bin_avg += vec;	
+			}
+			bin_avg /= obs.size();
+			observable.m_observable_average.emplace_back(std::move(bin_avg));
 		}
-		bin_avg /= obs.size();
-		observable.m_observable_average.emplace_back(std::move(bin_avg));
-	}
-	
-	for (const auto& [bin_data, avg] : std::ranges::views::zip(bins, observable.m_observable_average)) {
-		Vector bin_var { Vector::Zero() };
-		for (const auto& obs : bin_data.second) {
-			Vector diff { obs - avg };
-			bin_var += (diff.array() * diff.array()).matrix();
+	};
+
+	auto var = [&](const auto& bins, ObservableData& observable) {
+		for (const auto& [bin_data, avg] : std::ranges::views::zip(bins, observable.m_observable_average)) {
+			Vector bin_var { Vector::Zero() };
+			for (const auto& obs : bin_data.second) {
+				Vector diff { obs - avg };
+				bin_var += (diff.array() * diff.array()).matrix();
+			}
+			bin_var /= bin_data.second.size() - 1;
+			observable.m_observable_variance.emplace_back(std::move(bin_var));
 		}
-		bin_var /= bin_data.second.size() - 1;
-		observable.m_observable_variance.emplace_back(std::move(bin_var));
-	}
+	};
 
-	return observable;
-}
+	avg(bins_OP, observable_OP);
+	avg(bins_polarization, observable_polarization);
+	var(bins_OP, observable_OP);
+	var(bins_polarization, observable_polarization);
 
-inline void calculateLocalObservables(std::vector<helper::LocalUC>& local_UCs, double step_size) {
+	return std::make_pair(observable_OP, observable_polarization);
+
+};
+
+inline void calculateLocalObservables(std::vector<helper::LocalUC>& local_UCs, double step_size, bool OP = true, bool polarization = true) {
 	// write a custom find/set initial orientation function for APBs 
 	std::vector<size_t> DW_centers_init_ids; // containing all center DWs picked befor local z axis could be determined
 	DW_centers_init_ids.reserve(20);
-	
-	helper::UnitCell pristine_UC_sp { AtomType::Sr, AtomType::Ti, 1, { 1, 0, 0, 0 } }; // sigma +1 UC
-	helper::UnitCell pristine_UC_sn { AtomType::Sr, AtomType::Ti, -1, { 1, 0, 0, 0 } }; // sigma -1 UC
-	
+
+	helper::UnitCell pristine_UC_sp { AtomType::Sr, AtomType::Ti, 1, { 1, 0, 0, 0 }, local_UCs.at(0).getLatticeConstant() }; // sigma +1 UC
+	helper::UnitCell pristine_UC_sn { AtomType::Sr, AtomType::Ti, -1, { 1, 0, 0, 0 }, local_UCs.at(0).getLatticeConstant() }; // sigma -1 UC
+
 	auto getUnitCellData = [&](helper::LocalUC& local_UC) {
 		helper::LocalUC local_UC_centered { local_UC.getCenteredUC() };
 		auto local_UC_initial = local_UC.getInitialOrientation().value();
 		Eigen::Quaterniond best_quaternion { helper::gradientDescent(pristine_UC_sp, local_UC, local_UC_initial, step_size) };
 		std::tuple<Eigen::Quaterniond, short, helper::UnitCell::Rotation> orientation = std::make_tuple(best_quaternion, std::get<1>(local_UC_initial), std::get<2>(local_UC_initial));
 		local_UC.m_orientation = orientation;
-		local_UC.updateInitialOrientation(orientation); // use orientation of last cell on same side as initial
 
 		helper::UnitCell pristine_UC_sp_rot { pristine_UC_sp.getRotatedUC(best_quaternion) };
 		helper::UnitCell pristine_UC_sn_rot { pristine_UC_sn.getRotatedUC(best_quaternion) };
@@ -1528,9 +1901,15 @@ inline void calculateLocalObservables(std::vector<helper::LocalUC>& local_UCs, d
 		displacement_sp <= displacement_sn ? local_UC.m_O_rot_sign = 1 : local_UC.m_O_rot_sign = -1;
 
 		local_UC.sortOs(best_quaternion);
-
+		local_UC.updateInitialOrientation(orientation);
 		// calculate OP and Polarization
-		local_UC.calculateLocalOP();
+		if (OP) {
+			local_UC.calculateLocalOP();
+		}
+
+		if (polarization) {
+			local_UC.calculateLocalPolarization();
+		}
 	};
 
 	bool is_first { true };
