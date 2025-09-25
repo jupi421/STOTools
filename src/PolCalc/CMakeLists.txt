@@ -31,7 +31,7 @@ add_library(build_opts INTERFACE)
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
 	target_compile_options(build_opts INTERFACE
 		$<$<CONFIG:Debug>:-Og -g3 -fno-omit-frame-pointer>
-		$<$<CONFIG:Release>:-O3 -DNDEBUG>
+		$<$<CONFIG:Release>:-O2 -DNDEBUG>
 	)
 endif()
 

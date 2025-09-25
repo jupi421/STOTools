@@ -3,8 +3,8 @@
 using namespace PolCalc;
 
 int main() {
-	for (size_t i { 200 }; i<=9300; i+=50) {
-		auto poscar = readPOSCAR("./test/poscars/POSCAR."+std::to_string(i)).value(); // or "POSCAR"
+	for (size_t i { 1 }; i<=9300; i++) {
+		auto poscar = readPOSCAR("./example/poscarsT20_p80/POSCAR."+std::to_string(i)).value(); // or "POSCAR"
 		Positions positions_raw = poscar.m_positions_direct;
 
 		// If you want to derive N_Sr/N_Ti/N_O from POSCAR instead of hardcoding:
@@ -22,11 +22,14 @@ int main() {
 
 		auto local_UCs = createLocalUCs(atoms.m_A, atoms.m_B, atoms.m_O, A_NNs, O_NNs, phase_factors, PolCalc::DWType::HT, cell_matrix);
 
+		std::println("POSCAR {}", i);
 		calculateLocalObservables(local_UCs, 0.0005);
 		auto obs = calculateObservable(local_UCs, 0.25);
 
 		std::println("Writing data for config {}", i);
-		write("example/OP/op"+std::to_string(i)+".out", obs.first);
-		write("example/POL/pol"+std::to_string(i)+".out", obs.second);
+		std::println();
+		helper::COUNTER = 0;
+		write("example/OP/OP_T20_p80/op"+std::to_string(i)+".out", obs.first);
+		write("example/POL/POL_T20_p80/pol"+std::to_string(i)+".out", obs.second);
 	}
 }

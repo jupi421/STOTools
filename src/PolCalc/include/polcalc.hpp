@@ -741,6 +741,21 @@ public:
 		return std::make_pair(m_left_init_orientation.value(), m_right_init_orientation.value());
 	}
 
+	std::string getDWSide() {
+		std::string side;
+		if (m_side == LocalUC::DWSide::right)
+			side = "r";
+		else if (m_side == LocalUC::DWSide::left)
+			side = "l";
+		else if (m_side == LocalUC::DWSide::center)
+			side = "c";
+		else {
+			side="None";
+		}
+
+		return side;
+	}
+
 
 	std::expected<void, std::string> setInitialOrientation(const std::tuple<Eigen::Quaterniond, short, Rotation>& orientation) { 
 		// orientation short: perm num, Rotation: perm dir, Quaternion: rotation of permuted unit cell
@@ -986,17 +1001,11 @@ public:
 
 		Vector polarization { Vector::Zero() };
 
-		for (auto& [first, second] : displacements.m_A_displacements) {
-			polarization.array() += (BEC_Sr*first).array();
-			polarization.array() += (BEC_Sr*second).array();
-		}
+		polarization.array() += (BEC_Sr*displacements.m_A_displacements.at(0).first).array();
 		polarization.array() += (BEC_Ti*displacements.m_B_displacement).array();
 		polarization.array() += (BEC_Oy*displacements.m_O_displacements.at(0).first).array();
 		polarization.array() += (BEC_Oz*displacements.m_O_displacements.at(1).first).array();
 		polarization.array() += (BEC_Ox*displacements.m_O_displacements.at(2).first).array();
-		polarization.array() += (BEC_Oy*displacements.m_O_displacements.at(0).second).array();
-		polarization.array() += (BEC_Oz*displacements.m_O_displacements.at(1).second).array();
-		polarization.array() += (BEC_Ox*displacements.m_O_displacements.at(2).second).array();
 
 		polarization *= elementary_charge/(reference_UC.m_cell_volume * std::pow(1e-10, 3));
 
@@ -1179,7 +1188,7 @@ inline std::vector<LocalUC::PhaseFactor> findPhaseFactor(const Atoms& B, const s
 
 	return out;
 }
-
+size_t COUNTER = 0; 
 inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const LocalUC &local_UC, 
 										  const std::tuple<Eigen::Quaterniond, short, UnitCell::Rotation>& init_orientation, double step_size = 0.0005 ) {
 	constexpr double threshold { 1e-12 };
@@ -1315,6 +1324,19 @@ inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const Loc
 		current_unit_quaternion = new_unit_quaternion;
 		cur_sq_dist = new_sq_dist;
 	}
+
+	std::print("UnitCell id {}, q = ", COUNTER++);
+	std::cout << (current_unit_quaternion*initial_quaternion).normalized() << " ,";
+	std::string side;
+	if (local_UC.m_side == LocalUC::DWSide::right)
+		side = "r";
+	else if (local_UC.m_side == LocalUC::DWSide::left)
+		side = "l";
+	else if (local_UC.m_side == LocalUC::DWSide::center)
+		side = "c";
+
+	std::print(" , DW side = {}, sq_dist = {}", side, cur_sq_dist);
+	std::println();
 
 	return (current_unit_quaternion*initial_quaternion).normalized();
 }
@@ -1782,7 +1804,7 @@ inline std::vector<helper::LocalUC> createLocalUCs(const Atoms& A, const Atoms& 
 }
 
 
-inline std::pair<ObservableData, ObservableData> calculateObservable(const std::vector<helper::LocalUC>& local_UCs, double threshold = 1 /*in angstroem*/) { //different behavior for either P or OP
+inline std::pair<ObservableData, ObservableData> calculateObservable(const std::vector<helper::LocalUC>& local_UCs, double threshold = 1 /*in angstroem*/) {
 	std::vector<helper::LocalUC> local_UCs_cp { local_UCs };
 	std::ranges::sort(local_UCs_cp, [](const auto& lhs, const auto& rhs) {
 		return lhs.m_B_cart_nopbc.m_position.x() < rhs.m_B_cart_nopbc.m_position.x();
@@ -1836,7 +1858,7 @@ inline std::pair<ObservableData, ObservableData> calculateObservable(const std::
 	ObservableData observable_OP(bins_OP.size());
 	ObservableData observable_polarization(bins_OP.size());
 
-	for (auto&& [pair_OP, pair_polarization]: std::ranges::views::zip(bins_OP, bins_polarization)) {
+	for (auto&& [pair_OP, pair_polarization] : std::ranges::views::zip(bins_OP, bins_polarization)) {
 		observable_OP.m_bin_center.emplace_back(pair_OP.first);
 		observable_polarization.m_bin_center.emplace_back(pair_polarization.first);
 	}
