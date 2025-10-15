@@ -3,8 +3,8 @@
 using namespace PolCalc;
 
 int main() {
-	for (size_t i { 0 }; i<2412; i++) {
-		auto poscar = readPOSCAR("./example/poscarsT40_p80_dt1/POSCAR."+std::to_string(i)).value(); // or "POSCAR"
+	for (size_t i { 0 }; i<20000; i++) {
+		auto poscar = readPOSCAR("./poscars/POSCAR."+std::to_string(i)).value(); // or "POSCAR"
 		Positions positions_raw = poscar.m_positions_direct;
 
 		// If you want to derive N_Sr/N_Ti/N_O from POSCAR instead of hardcoding:
@@ -29,7 +29,7 @@ int main() {
 		std::println("Writing data for config {}", i);
 		std::println();
 		helper::COUNTER = 0;
-		write("example/OP/OP_T40_p80_dt1/op"+std::to_string(i)+".out", obs.first);
-		write("example/POL/POL_T40_p80_dt1/pol"+std::to_string(i)+".out", obs.second);
+		write("./OP/op"+std::to_string(i)+".out", obs.first);
+		write("./POL/pol"+std::to_string(i)+".out", obs.second);
 	}
 }

@@ -134,14 +134,13 @@ public:
 		m_O_cart_nopbc.reserve(3);
 	}
 
-	UnitCell(AtomType type_A, AtomType type_B, double lattice_const = 3.905) {
+	UnitCell(AtomType type_A, AtomType type_B, double lattice_const = 3.85857 ) {
 		m_A_cart_nopbc.reserve(4);
 		m_O_cart_nopbc.reserve(3);
 
 		const double a { lattice_const };
-		const double c { a }; 
 
-		m_cell_volume = a*a*c;
+		m_cell_volume = a*a*a;
 
 		Eigen::Vector3d ex = Eigen::Vector3d(1, 0, 0);
 		Eigen::Vector3d ey = Eigen::Vector3d(0, 1, 0);
@@ -155,10 +154,10 @@ public:
 		};
 
 		// front lower left, back lower left, then anticlockwise
-		fill_pristine_A(type_A, - 0.5*a*ex - 0.5*a*ey - 0.5*c*ez);
-		fill_pristine_A(type_A, 0.5*a*ex - 0.5*a*ey - 0.5*c*ez);
-		fill_pristine_A(type_A, 0.5*a*ex - 0.5*a*ey + 0.5*c*ez);
-		fill_pristine_A(type_A, -0.5*a*ex - 0.5*a*ey + 0.5*c*ez);
+		fill_pristine_A(type_A, - 0.5*a*ex - 0.5*a*ey - 0.5*a*ez);
+		fill_pristine_A(type_A, 0.5*a*ex - 0.5*a*ey - 0.5*a*ez);
+		fill_pristine_A(type_A, 0.5*a*ex - 0.5*a*ey + 0.5*a*ez);
+		fill_pristine_A(type_A, -0.5*a*ex - 0.5*a*ey + 0.5*a*ez);
 
 		m_B_cart_nopbc = Atom(type_B, Position::Zero());
 
@@ -175,15 +174,14 @@ public:
 
 	UnitCell(AtomType type_A, AtomType type_B, short O_rot_sign /* = +- 1*/, 
 		  const Eigen::Quaterniond& orientation, double rot_angle = 3*M_PI/180, 
-		  double lattice_const = 3.905, AtomType type_O = AtomType::O)
+		  double lattice_const = 3.85857 , AtomType type_O = AtomType::O)
 	: m_orientation(orientation)
 	{
 		m_A_cart_nopbc.reserve(4);
 		m_O_cart_nopbc.reserve(3);
 
 		const double a { lattice_const };
-		const double c { a }; 
-		m_cell_volume = a*a*c;
+		m_cell_volume = a*a*a;
 
 		Eigen::Vector3d ex = Eigen::Vector3d(1, 0, 0);
 		Eigen::Vector3d ey = Eigen::Vector3d(0, 1, 0);
@@ -197,10 +195,10 @@ public:
 		};
 
 		// front lower left, back lower left, then anticlockwise
-		fill_pristine_A(type_A, - 0.5*a*ex - 0.5*a*ey - 0.5*c*ez);
-		fill_pristine_A(type_A, 0.5*a*ex - 0.5*a*ey - 0.5*c*ez);
-		fill_pristine_A(type_A, 0.5*a*ex - 0.5*a*ey + 0.5*c*ez);
-		fill_pristine_A(type_A, -0.5*a*ex - 0.5*a*ey + 0.5*c*ez);
+		fill_pristine_A(type_A, - 0.5*a*ex - 0.5*a*ey - 0.5*a*ez);
+		fill_pristine_A(type_A, 0.5*a*ex - 0.5*a*ey - 0.5*a*ez);
+		fill_pristine_A(type_A, 0.5*a*ex - 0.5*a*ey + 0.5*a*ez);
+		fill_pristine_A(type_A, -0.5*a*ex - 0.5*a*ey + 0.5*a*ez);
 
 		m_B_cart_nopbc = Atom(type_B, Position::Zero());
 
@@ -592,7 +590,7 @@ private:
 	}
 
 public:
-	friend void calculateLatticeConstant(std::vector<LocalUC>& local_UCs);
+	friend void calculateLatticeConstant(std::vector<LocalUC>& local_UCs, std::optional<double> lattice_constant);
 
 	double getLatticeConstant() const {
 		return m_global_lattice_constant.value();
@@ -1015,7 +1013,11 @@ public:
 
 };
 
-inline void calculateLatticeConstant(std::vector<LocalUC>& local_UCs) {
+inline void calculateLatticeConstant(std::vector<LocalUC>& local_UCs, std::optional<double> lattice_constant = std::nullopt) {
+	if (lattice_constant) {
+		local_UCs.at(0).m_local_lattice_constant = lattice_constant.value();
+			return;
+	}
 	double sum = std::accumulate(local_UCs.begin(), local_UCs.end(), 0.0, [](double acc, const LocalUC& local_UC) {
 		return acc + local_UC.m_local_lattice_constant;
 	});
@@ -1263,7 +1265,7 @@ inline Eigen::Quaterniond gradientDescent(const UnitCell& pristine_UC, const Loc
 				sum += local_atoms_A.first.m_position.dot(grad_R_i*pristine_atoms_A.first.m_position);
 				sum += local_atoms_A.second.m_position.dot(grad_R_i*pristine_atoms_A.second.m_position);
 			}
-			g_coeff[i] = -2*sum/(3.905*3.905);
+			g_coeff[i] = -2*sum/(3.85857*3.85857);
 		}
 
 		return g;
@@ -1798,7 +1800,7 @@ inline std::vector<helper::LocalUC> createLocalUCs(const Atoms& A, const Atoms& 
 		local_UCs.emplace_back(std::move(A_local), std::move(B_local), std::move(O_local), phase_factor, DW_type, cell_matrix);
 	}
 
-	calculateLatticeConstant(local_UCs);
+	calculateLatticeConstant(local_UCs, 3.85857);
 
 	return local_UCs;
 }
